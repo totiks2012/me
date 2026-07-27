@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# me completion — автогенерация словаря методов по хэшу me.conf
+# Установка: install_me.sh скопирует в ~/.bash_completion
+
+# Обёртка: me int → команда в историю (нажми Up для редактирования)
+me() {
+    if [[ "$1" == "int" ]]; then
+        local _mecmd
+        _mecmd=$(command me int)
+        if [[ -n "$_mecmd" ]]; then
+            printf '%s\n' "$_mecmd" >&2
+            history -s "$_mecmd"
+        fi
+    else
+        command me "$@"
+    fi
+}
+
+_me_completion() {
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+    local prev="${COMP_WORDS[COMP_CWORD-1]}"
+    local conf="$HOME/.config/me/me.conf"
+    local dict="$HOME/.config/me/.me.dict"
+    local hashf="$HOME/.config/me/.me.hash"
+
+    # Для me run — подсказываем скрипты
+    if [ "$prev" = "run" ]; then
+        local scripts
+        scripts=$(find "$HOME/.local/bin" -maxdepth 3 -type f -executable -printf "%f\n" 2>/dev/null | sort -u)
+        COMPREPLY=($(compgen -W "$scripts" -- "$cur"))
+        return
+    fi
+
+    # Словарь методов с автообновлением по хэшу me.conf
+    if [ -f "$conf" ]; then
+        local new_hash
+        new_hash=$(md5sum "$conf" | cut -d' ' -f1)
+        local old_hash
+        old_hash=$(cat "$hashf" 2>/dev/null)
+
+        if [ "$new_hash" != "$old_hash" ] || [ ! -f "$dict" ]; then
+            grep '^#@method:' "$conf" | cut -d':' -f2- | xargs | tr ' ' '\n' > "$dict" 2>/dev/null
+            echo "$new_hash" > "$hashf" 2>/dev/null
+        fi
+
+        if [ -f "$dict" ]; then
+            COMPREPLY=($(compgen -W "$(cat "$dict")" -- "$cur"))
+        fi
+    fi
+}
+
+complete -F _me_completion me

@@ -1,0 +1,466 @@
+#!/usr/bin/env bash
+# 26-07-2026_16-37-50 — Изменил формат имени слепка с амереканского на европейский
+# cit__26-07-2026_19-10-50 — Добавил к версии имя версионрованого скрипта
+# cit__26-07-2026_19-23-48 — Добавил аргумент -f(finalize) добавляет полный ченджлог в основной и в слепок
+# cit: cit__26-07-2026_19-23-48 — Добавил аргумент -f(finalize) добавляет полный ченджлог в основной и в слепок
+set -euo pipefail
+
+CIT_DIR="$PWD/.cit"
+TRASH_DIR="$CIT_DIR/tr_cit"
+mkdir -p "$CIT_DIR"
+
+# Уведомление: пишет в терминал и шлёт desktop-уведомление через me say
+notify() {
+    local body="$1"
+    echo "[cit] $body"
+    me say "cit" "$body" 2>/dev/null || notify-send -t 3000 "cit" "$body" 2>/dev/null || true
+}
+
+encode_path() { echo "$1" | sed 's|^/||;s|/|__|g'; }
+decode_path() { echo "/$(echo "$1" | sed 's|__|/|g')"; }
+rel_path() { echo "$1" | sed "s|^$PWD/||"; }
+
+preview_snaps() {
+    local store="$1"
+    printf '=== Слепки ===\n'
+    local snaps
+    snaps=$(ls "$store"/*.cit 2>/dev/null | sort -r) || true
+    [ -z "$snaps" ] && printf 'Нет слепков\n' && return
+    local count=0
+    for s in $snaps; do
+        count=$((count + 1))
+        [ "$count" -gt 5 ] && break
+        local ts
+        ts=$(basename "$s" .cit)
+        local logfile="$store/$ts.log"
+        printf '  %s  %s\n' "$ts" "$(head -1 "$logfile" 2>/dev/null || true)"
+    done
+    local last_snap prev_snap
+    last_snap=$(echo "$snaps" | head -1)
+    prev_snap=$(echo "$snaps" | sed -n '2p')
+    if [ -n "$prev_snap" ]; then
+        printf '\n=== Diff ===\n'
+        diff -u "$prev_snap" "$last_snap" 2>/dev/null || true
+    fi
+}
+
+list_tracked() {
+    local out=""
+    for d in "$CIT_DIR"/*/; do
+        [ -d "$d" ] || continue
+        local enc
+        enc=$(basename "$d")
+        [ "$enc" = "tr_cit" ] && continue
+        local store="${d%/}"
+        local decoded
+        decoded=$(decode_path "$enc")
+        local snap_count
+        snap_count=$(ls "$store"/*.cit 2>/dev/null | wc -l) || true
+        [ "$snap_count" -eq 0 ] && continue
+        out="$out$decoded|$store
+"
+    done
+    echo "$out" | sed '/^$/d'
+}
+
+list_trashed() {
+    local out=""
+    [ ! -d "$TRASH_DIR" ] && return
+    for d in "$TRASH_DIR"/*/; do
+        [ -d "$d" ] || continue
+        local enc
+        enc=$(basename "$d")
+        local store="${d%/}"
+        local decoded
+        decoded=$(decode_path "$enc")
+        local snap_count
+        snap_count=$(ls "$store"/*.cit 2>/dev/null | wc -l) || true
+        [ "$snap_count" -eq 0 ] && continue
+        out="$out$decoded|$store
+"
+    done
+    echo "$out" | sed '/^$/d'
+}
+
+is_script() {
+    head -1 "$1" 2>/dev/null | grep -q '^#!'
+}
+
+inject_changelog() {
+    local snap="$1" msg="$2" ts="$3"
+    local tmp
+    tmp=$(mktemp)
+    head -1 "$snap" > "$tmp"
+    printf '# cit: %s — %s\n' "$ts" "$msg" >> "$tmp"
+    tail -n +2 "$snap" >> "$tmp"
+    mv "$tmp" "$snap"
+}
+
+push_file() {
+    local file="$1"
+    [ -f "$file" ] || return
+    local rp
+    rp=$(rel_path "$file")
+    local fe
+    fe=$(encode_path "$file")
+    local store="$CIT_DIR/$fe"
+    mkdir -p "$store"
+    local fname ts
+    fname=$(basename "$file" | sed 's/[^a-zA-Z0-9._-]/_/g')
+    ts="${fname}__$(date '+%d-%m-%Y_%H-%M-%S')"
+    cp "$file" "$store/$ts.cit"
+    notify "Слепок: $rp → $ts"
+    echo -n "  Ченджлог: "
+    read -r msg </dev/tty
+    if [ -n "$msg" ]; then
+        echo "$msg" > "$store/$ts.log"
+        if is_script "$file"; then
+            inject_changelog "$store/$ts.cit" "$msg" "$ts"
+        fi
+    else
+        echo "(пусто)" > "$store/$ts.log"
+    fi
+}
+
+export CIT_DIR TRASH_DIR
+export -f encode_path decode_path rel_path preview_snaps push_file
+
+# ── Режим -f: финальная сборка с полным ченджлогом ──
+if [ "${1:-}" = "-f" ]; then
+    tracked=$(list_tracked)
+    if [ -z "$tracked" ]; then
+        notify "Нет отслеживаемых файлов."
+        exit 1
+    fi
+
+    tracked_count=$(echo "$tracked" | wc -l)
+    if [ "$tracked_count" -eq 1 ]; then
+        decoded=$(echo "$tracked" | cut -d'|' -f1)
+        store=$(echo "$tracked" | cut -d'|' -f2)
+    else
+        set +e
+        chosen=$(echo "$tracked" | fzf --reverse --delimiter='|' --with-nth=1 \
+            --header="Финальная сборка — выбери файл" \
+            --preview='preview_snaps $(echo {} | cut -d"|" -f2)' \
+            --preview-window='right:60%:wrap')
+        set -euo pipefail
+        [ -z "$chosen" ] && exit 0
+        decoded=$(echo "$chosen" | cut -d'|' -f1)
+        store=$(echo "$chosen" | cut -d'|' -f2)
+    fi
+
+    snaps=$(ls "$store"/*.cit 2>/dev/null | sort) || true
+    if [ -z "$snaps" ]; then
+        notify "Слепков нет."
+        exit 1
+    fi
+
+    latest_snap=$(echo "$snaps" | tail -1)
+    latest_ts=$(basename "$latest_snap" .cit)
+    fname=$(basename "$decoded")
+
+    # Собираем все ченджлоги
+    changelog_lines=""
+    for s in $snaps; do
+        ts=$(basename "$s" .cit)
+        logfile="$store/$ts.log"
+        if [ -f "$logfile" ]; then
+            while IFS= read -r line; do
+                changelog_lines="$changelog_lines# $ts — $line"$'\n'
+            done < "$logfile"
+        fi
+    done
+
+    # Собираем контент: ченджлог + тело последнего слепка
+    build_content() {
+        local src="$1" cl="$2"
+        if is_script "$src"; then
+            head -1 "$src"
+            printf '%s' "$cl"
+            tail -n +2 "$src"
+        else
+            printf '%s' "$cl"
+            cat "$src"
+        fi
+    }
+
+    # Обновляем оригинальный файл (in-place)
+    orig_content=$(build_content "$latest_snap" "$changelog_lines")
+    printf '%s\n' "$orig_content" > "$decoded"
+    chmod +x "$decoded" 2>/dev/null || true
+
+    # Формируем имя -F копии (сохраняем расширение)
+    base="${fname%.*}"
+    ext="${fname##*.}"
+    if [ "$fname" = "$ext" ]; then
+        out_name="${fname}-F"
+    else
+        out_name="${base}-F.${ext}"
+    fi
+    out_dir=$(dirname "$decoded")
+    out_file="$out_dir/$out_name"
+    cp "$decoded" "$out_file"
+
+    # Комбинированный лог-файл рядом с -F копией
+    log_file="${out_file}.log"
+    {
+        for s in $snaps; do
+            ts=$(basename "$s" .cit)
+            logfile="$store/$ts.log"
+            if [ -f "$logfile" ]; then
+                echo "=== $ts ==="
+                cat "$logfile"
+                echo ""
+            fi
+        done
+    } > "$log_file"
+
+    notify "Финальная сборка: $(basename "$decoded") + $out_name (версия $latest_ts)"
+    echo "[cit] Оригинал обновлён: $decoded"
+    echo "[cit] -F копия: $out_file"
+    echo "[cit] Лог:       $log_file"
+    exit 0
+fi
+
+while true; do
+    set +e
+    action=$(printf "Создать слепок (Push)\nОткат к предыдущей версии\nВыбор версии для восстановления\nУдалить из cit\nВосстановить из корзины\nОчистить корзину" | \
+        fzf --reverse --header="cit — $PWD")
+    fzf_exit=$?
+    set -euo pipefail
+    [ $fzf_exit -ne 0 ] && exit 0
+
+    case "$action" in
+        "Создать слепок (Push)")
+            set +e
+            filelist=$(find "$PWD" -maxdepth 3 \( -type f -o -type d \) ! -path '*/\.cit/*' 2>/dev/null | \
+                fzf --multi --reverse \
+                --header="Выбери файлы/каталоги (Tab — отметить)" \
+                --preview='if [ -d {} ]; then ls {} 2>/dev/null; else head -50 {} 2>/dev/null; fi' \
+                --preview-window='right:50%:wrap')
+            set -euo pipefail
+            [ -z "$filelist" ] && continue
+            while IFS= read -r item; do
+                [ -z "$item" ] && continue
+                if [ -d "$item" ]; then
+                    while IFS= read -r f; do
+                        [ -f "$f" ] && push_file "$f"
+                    done < <(find "$item" -type f 2>/dev/null)
+                else
+                    push_file "$item"
+                fi
+            done <<< "$filelist"
+            notify "Готово."
+            ;;
+        "Откат к предыдущей версии")
+            tracked=$(list_tracked)
+            if [ -z "$tracked" ]; then notify "Нет отслеживаемых файлов."; continue; fi
+            tracked_count=$(echo "$tracked" | wc -l)
+            if [ "$tracked_count" -eq 1 ]; then
+                decoded=$(echo "$tracked" | cut -d'|' -f1)
+                store=$(echo "$tracked" | cut -d'|' -f2)
+            else
+                set +e
+                chosen=$(echo "$tracked" | fzf --reverse --delimiter='|' --with-nth=1 \
+                    --header="Какой файл откатить?" \
+                    --preview='preview_snaps $(echo {} | cut -d"|" -f2)' \
+                    --preview-window='right:60%:wrap')
+                set -euo pipefail
+                [ -z "$chosen" ] && continue
+                decoded=$(echo "$chosen" | cut -d'|' -f1)
+                store=$(echo "$chosen" | cut -d'|' -f2)
+            fi
+            snaps=$(ls "$store"/*.cit 2>/dev/null | sort -r) || true
+            [ -z "$snaps" ] && notify "Слепков нет." && continue
+            last_snap=$(echo "$snaps" | head -1)
+            last_ts=$(basename "$last_snap" .cit)
+            [ ! -f "$decoded" ] && notify "Файл не найден: $decoded" && continue
+            mv "$decoded" "${decoded}.WIP"
+            cp "$last_snap" "$decoded"
+            notify "Откат: $decoded → $last_ts"
+            logfile="$store/$last_ts.log"
+            if [ -f "$logfile" ]; then
+                printf '\n--- Ченджлог ---\n'
+                cat "$logfile"
+                printf '\n'
+            fi
+            notify "Откат выполнен."
+            ;;
+        "Выбор версии для восстановления")
+            tracked=$(list_tracked)
+            if [ -z "$tracked" ]; then notify "Нет отслеживаемых файлов."; continue; fi
+            tracked_count=$(echo "$tracked" | wc -l)
+            if [ "$tracked_count" -eq 1 ]; then
+                decoded=$(echo "$tracked" | cut -d'|' -f1)
+                store=$(echo "$tracked" | cut -d'|' -f2)
+            else
+                set +e
+                chosen=$(echo "$tracked" | fzf --reverse --delimiter='|' --with-nth=1 \
+                    --header="Какой файл восстановить?" \
+                    --preview='preview_snaps $(echo {} | cut -d"|" -f2)' \
+                    --preview-window='right:60%:wrap')
+                set -euo pipefail
+                [ -z "$chosen" ] && continue
+                decoded=$(echo "$chosen" | cut -d'|' -f1)
+                store=$(echo "$chosen" | cut -d'|' -f2)
+            fi
+            snaps=$(ls "$store"/*.cit 2>/dev/null | sort -r) || true
+            if [ -z "$snaps" ]; then notify "Слепков нет."; continue; fi
+            set +e
+            chosen_ts=$(
+                for s in $snaps; do
+                    ts=$(basename "$s" .cit)
+                    logfile="$store/$ts.log"
+                    first_line=""
+                    [ -f "$logfile" ] && first_line=$(head -1 "$logfile")
+                    printf '%s|%s|%s\n' "$ts" "$decoded" "$first_line"
+                done | fzf --reverse --prompt="Выбери слепок > " \
+                    --delimiter='|' --with-nth='1..2' \
+                    --preview='lf='"$store"'/$(echo {} | cut -d"|" -f1).log; [ -f "$lf" ] && cat "$lf"' \
+                    --preview-window='right:50%:wrap'
+            )
+            fzf_exit=$?
+            set -euo pipefail
+            [ $fzf_exit -ne 0 ] && continue
+            [ -z "$chosen_ts" ] && continue
+            ts=$(echo "$chosen_ts" | cut -d'|' -f1)
+            [ -z "$ts" ] && continue
+            [ ! -f "$decoded" ] && notify "Файл не найден: $decoded" && continue
+            mv "$decoded" "${decoded}.WIP"
+            cp "$store/$ts.cit" "$decoded"
+            notify "Восстановлен $decoded → $ts"
+            logfile="$store/$ts.log"
+            if [ -f "$logfile" ]; then
+                printf '\n--- Ченджлог ---\n'
+                cat "$logfile"
+                printf '\n'
+            fi
+            notify "Восстановление выполнено."
+            ;;
+        "Удалить из cit")
+            tracked=$(list_tracked)
+            if [ -z "$tracked" ]; then notify "Нет отслеживаемых файлов."; continue; fi
+            tracked_count=$(echo "$tracked" | wc -l)
+            if [ "$tracked_count" -eq 1 ]; then
+                decoded=$(echo "$tracked" | cut -d'|' -f1)
+                store=$(echo "$tracked" | cut -d'|' -f2)
+            else
+                set +e
+                chosen=$(echo "$tracked" | fzf --reverse --delimiter='|' --with-nth=1 \
+                    --header="Из какого проекта удалить слепок?" \
+                    --preview='preview_snaps $(echo {} | cut -d"|" -f2)' \
+                    --preview-window='right:60%:wrap')
+                set -euo pipefail
+                [ -z "$chosen" ] && continue
+                decoded=$(echo "$chosen" | cut -d'|' -f1)
+                store=$(echo "$chosen" | cut -d'|' -f2)
+            fi
+            snaps=$(ls "$store"/*.cit 2>/dev/null | sort -r) || true
+            if [ -z "$snaps" ]; then notify "Слепков нет."; continue; fi
+            set +e
+            chosen_snap=$(
+                for s in $snaps; do
+                    ts=$(basename "$s" .cit)
+                    logfile="$store/$ts.log"
+                    first_line=""
+                    [ -f "$logfile" ] && first_line=$(head -1 "$logfile")
+                    printf '%s|%s|%s\n' "$ts" "$decoded" "$first_line"
+                done | fzf --reverse --prompt="Какой слепок удалить? > " \
+                    --delimiter='|' --with-nth='1..2' \
+                    --preview='lf='"$store"'/$(echo {} | cut -d"|" -f1).log; [ -f "$lf" ] && cat "$lf"' \
+                    --preview-window='right:50%:wrap'
+            )
+            fzf_exit=$?
+            set -euo pipefail
+            [ $fzf_exit -ne 0 ] && continue
+            [ -z "$chosen_snap" ] && continue
+            ts=$(echo "$chosen_snap" | cut -d'|' -f1)
+            [ -z "$ts" ] && continue
+            enc=$(basename "$store")
+            trash_store="$TRASH_DIR/$enc"
+            mkdir -p "$trash_store"
+            mv "$store/$ts.cit" "$trash_store/$ts.cit"
+            if [ -f "$store/$ts.log" ]; then
+                mv "$store/$ts.log" "$trash_store/$ts.log"
+            fi
+            remaining=$(ls "$store"/*.cit 2>/dev/null | wc -l) || true
+            if [ "$remaining" -eq 0 ]; then
+                rmdir "$store" 2>/dev/null || true
+            fi
+            notify "Удалён слепок $ts для $decoded → перенесён в корзину."
+            ;;
+        "Восстановить из корзины")
+            if [ ! -d "$TRASH_DIR" ] || [ -z "$(ls -A "$TRASH_DIR" 2>/dev/null)" ]; then
+                notify "Корзина пуста."
+                continue
+            fi
+            trash_list=$(
+                for d in "$TRASH_DIR"/*/; do
+                    [ -d "$d" ] || continue
+                    enc=$(basename "$d")
+                    decoded=$(decode_path "$enc")
+                    for s in "$d"*.cit; do
+                        [ -f "$s" ] || continue
+                        ts=$(basename "$s" .cit)
+                        logfile="$d$ts.log"
+                        first_line=""
+                        [ -f "$logfile" ] && first_line=$(head -1 "$logfile")
+                        printf '%s|%s|%s|%s\n' "$ts" "$decoded" "$first_line" "$enc"
+                    done
+                done
+            )
+            if [ -z "$trash_list" ]; then
+                notify "В корзине нет слепков."
+                continue
+            fi
+            set +e
+            chosen_snaps=$(
+                echo "$trash_list" | fzf --multi --reverse \
+                    --prompt="Выбери слепки для восст. (Tab — отметить) > " \
+                    --delimiter='|' --with-nth='1,2' \
+                    --preview='e=$(echo {} | cut -d"|" -f4); t=$(echo {} | cut -d"|" -f1); lf="'"$TRASH_DIR"'/$e/$t.log"; [ -f "$lf" ] && cat "$lf"' \
+                    --preview-window='right:50%:wrap'
+            )
+            fzf_exit=$?
+            set -euo pipefail
+            [ $fzf_exit -ne 0 ] && continue
+            [ -z "$chosen_snaps" ] && continue
+            restored=0
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                ts=$(echo "$line" | cut -d'|' -f1)
+                enc=$(echo "$line" | cut -d'|' -f4)
+                target="$CIT_DIR/$enc"
+                trash_store="$TRASH_DIR/$enc"
+                mkdir -p "$target"
+                mv "$trash_store/$ts.cit" "$target/$ts.cit"
+                if [ -f "$trash_store/$ts.log" ]; then
+                    mv "$trash_store/$ts.log" "$target/$ts.log"
+                fi
+                restored=$((restored + 1))
+                remaining=$(ls "$trash_store"/*.cit 2>/dev/null | wc -l) || true
+                [ "$remaining" -eq 0 ] && rmdir "$trash_store" 2>/dev/null || true
+            done <<< "$chosen_snaps"
+            notify "Восстановлено слепков: $restored"
+            ;;
+        "Очистить корзину")
+            if [ ! -d "$TRASH_DIR" ] || [ -z "$(ls -A "$TRASH_DIR" 2>/dev/null)" ]; then
+                notify "Корзина пуста."
+                continue
+            fi
+            trash_count=$(find "$TRASH_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
+            echo "[cit] В корзине проектов: $trash_count"
+            echo -n "  Очистить корзину? Все удалённые проекты будут безвозвратно удалены. (y/N): "
+            read -r confirm </dev/tty
+            case "$confirm" in
+                [yY]|[yY][eE][sS])
+                    rm -rf "$TRASH_DIR"/*
+                    notify "Корзина очищена. Удалено проектов: $trash_count."
+                    ;;
+                *)
+                    notify "Очистка отменена."
+                    ;;
+            esac
+            ;;
+    esac
+done

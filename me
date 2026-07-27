@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# me – универсальный инструмент оперативного управления системой
+# Отказоустойчивый движок с ленивой загрузкой методов
+
+CONF_DIR="$HOME/.config/me"
+CONF_FILE="$CONF_DIR/me.conf"
+
+CACHE_DIR="/dev/shm/me_$USER"
+CACHE_FILE="$CACHE_DIR/me.cache"
+HASH_FILE="$CACHE_DIR/me.hash"
+
+ME_LOGO_FILE="$CONF_DIR/.logo"
+ME_LOGO_ENABLED=0
+[ -f "$ME_LOGO_FILE" ] && [ "$(cat "$ME_LOGO_FILE")" = "1" ] && ME_LOGO_ENABLED=1
+
+show_logo() {
+    [ "$ME_LOGO_ENABLED" -eq 0 ] && return
+    printf '\033[1;32m\\me/\033[0m\n'
+}
+
+if [ ! -f "$CONF_FILE" ]; then
+    mkdir -p "$CONF_DIR"
+    touch "$CONF_FILE"
+    echo "[me] Создан пустой конфиг: $CONF_FILE." >&2
+fi
+
+# Загрузка вспомогательных функций из конфига (без префикса me_method_)
+load_helpers() {
+    local body
+    body=$(awk '
+        /^[a-zA-Z_][a-zA-Z0-9_]*\(\)/ && !/^me_method_/ { flag=1; print; next }
+        flag && /^}/ { print; flag=0; next }
+        flag { print }
+    ' "$CONF_FILE")
+    [ -n "$body" ] && eval "$body" 2>/dev/null
+}
+load_helpers
+
+# Извлечение и проверка тела метода, загрузка только по запросу
+load_method() {
+    local method_name="$1"
+    local func_name="me_method_${method_name}"
+
+    declare -f "$func_name" >/dev/null 2>&1 && return 0
+
+    local body
+    body=$(awk -v f="$func_name" '
+        $0 ~ "^" f "\\(\\).*" { flag=1; depth=1; print; next }
+        flag {
+            for (i=1; i<=length($0); i++) {
+                c = substr($0, i, 1)
+                if (c == "{") depth++
+                if (c == "}") depth--
+            }
+            print
+            if (depth <= 0) { flag=0; next }
+        }
+    ' "$CONF_FILE")
+
+    [ -z "$body" ] && return 1
+
+    local tmpfile
+    tmpfile=$(mktemp -p /dev/shm "me_check_XXXXXX.sh" 2>/dev/null)
+    [ -z "$tmpfile" ] && { echo "[me] Ошибка: не удалось создать временный файл" >&2; return 1; }
+
+    trap 'rm -f "$tmpfile"' RETURN
+    echo "$body" > "$tmpfile"
+
+    local err
+    if ! err=$(bash -n "$tmpfile" 2>&1); then
+        echo "[me] Ошибка синтаксиса в методе '$method_name':" >&2
+        echo "$err" | sed 's/^/  /' >&2
+        return 1
+    fi
+
+    eval "$body" || { echo "[me] Ошибка загрузки метода '$method_name'" >&2; return 1; }
+    return 0
+}
+
+# Функция сборки полного текстового кэша (только для вызова общей справки)
+compile_full_cache() {
+    mkdir -p "$CACHE_DIR"
+    local current_method="" current_desc="" current_ex=""
+    {
+        echo "Центральный динамический пульт 'me'."
+        echo "Использование: me <имя_метода> [аргументы]"
+        echo "               me -m <имя_метода> (справка о методе)"
+        echo
+        echo "Зарегистрированные методы в me.conf:"
+        echo "----------------------------------------------------------------------"
+        while read -r line; do
+            case "$line" in
+                "#@method:"*) current_method=$(echo "$line" | cut -d':' -f2- | xargs) ;;
+                "#@description:"*) current_desc=$(echo "$line" | cut -d':' -f2- | xargs) ;;
+                "#@example:"*)
+                    current_ex=$(echo "$line" | cut -d':' -f2- | xargs)
+                    if [ -n "$current_method" ]; then
+                        printf "  \033[1;32m%-15s\033[0m %s\n" "$current_method" "$current_desc"
+                        printf "                  \033[0;36mПример:\033[0m %s\n\n" "$current_ex"
+                    fi
+                    current_method="" current_desc="" current_ex=""
+                    ;;
+            esac
+        done < "$CONF_FILE"
+    } > "$CACHE_FILE"
+    md5sum "$CONF_FILE" | cut -d' ' -f1 > "$HASH_FILE" 2>/dev/null
+}
+
+# Вывод точечной справки по конкретному методу
+show_single_help() {
+    local target="$1"
+    if [ ! -s "$CONF_FILE" ]; then return; fi
+
+    echo "Справка по методу '$target':"
+    echo "----------------------------------------------------------------------"
+    awk -v t="$target" '
+        $1 == "#@method:" && $2 == t { flag=1; m=$2; next }
+        flag && $1 == "#@description:" { sub("#@description:[ \t]*", ""); d=$0; next }
+        flag && $1 == "#@example:" {
+            sub("#@example:[ \t]*", ""); e=$0;
+            printf "  \033[1;32m%-15s\033[0m %s\n", m, d
+            printf "                  \033[0;36mПример:\033[0m %s\n\n", e
+            flag=0; exit
+        }
+    ' "$CONF_FILE"
+}
+
+# Интерактивный выбор команды (built-in для "me int")
+interactive_selector() {
+    local list chosen cmd edited_cmd
+
+    # Сбор команд и вариантов из me.conf в формат "команда|описание|пример"
+    list=$(awk '
+        BEGIN { m = ""; d = ""; e = ""; v = 0; vf = 0 }
+        /^#@method:[ \t]*/ {
+            if (m != "" && !vf) print m "\t" d "\t" e
+            m = "me " $2; d = ""; e = ""; v = 0; vf = 0; next
+        }
+        /^#@description:[ \t]*/ {
+            sub(/^#@description:[ \t]*/, ""); d = $0; next
+        }
+        /^#@example:[ \t]*/ {
+            sub(/^#@example:[ \t]*/, ""); e = $0; next
+        }
+        /^#@variants:/ { v = 1; next }
+        /^#   me / {
+            if (v) {
+                sub(/^#   /, "")
+                idx = index($0, "  # ")
+                if (idx > 0) {
+                    vc = substr($0, 1, idx - 1)
+                    gsub(/[ \t]+$/, "", vc)
+                    vd = substr($0, idx + 4)
+                } else {
+                    vc = $0; vd = d
+                }
+                print vc "\t" vd "\t" e
+                vf = 1
+            }
+            next
+        }
+        /^me_method_.*\(\)/ {
+            if (!vf && m != "") print m "\t" d "\t" e
+            m = ""; vf = 0; next
+        }
+        END {
+            if (m != "" && !vf) print m "\t" d "\t" e
+        }
+    ' "$CONF_FILE") || true
+
+    [ -z "$list" ] && { echo "[me] Нет команд в $CONF_FILE" >&2; return 1; }
+
+    if command -v fzf &>/dev/null; then
+        chosen=$(echo "$list" | fzf \
+            --reverse \
+            --delimiter=$'\t' \
+            --with-nth=1 \
+            --preview='printf "\033[1;32m  %s\033[0m\n  \033[0;36mПример:\033[0m %s\n" {2} {3}' \
+            --preview-window='right:60%:wrap' \
+            --bind='f5:execute($HOME/.local/bin/me/me_lib/int_help.sh {})' \
+            --prompt='me > ' \
+            2>/dev/null) || return 0
+        [ -z "$chosen" ] && return 0
+        chosen="${chosen%%$'\t'*}"
+    else
+        echo "[me] fzf не установлен. Установи: sudo apt install fzf" >&2
+        echo "[me] Работаю в текстовом режиме..." >&2
+        echo >&2
+        local i=0
+        local -a cmds=()
+        while IFS=$'\t' read -r c d e; do
+            i=$((i + 1))
+            cmds+=("$c")
+            printf "  %2d. %s  # %s\n" "$i" "$c" "$d" >&2
+        done <<< "$list"
+        echo >&2
+        local choice
+        read -p "Выберите номер: " choice
+        [ -z "$choice" ] && return 0
+        choice=$((choice - 1))
+        [ "$choice" -lt 0 ] || [ "$choice" -ge "$i" ] && { echo "[me] Неверный номер" >&2; return 1; }
+        chosen="${cmds[$choice]}"
+    fi
+
+    printf '%s\n' "$chosen"  # output to stdout (caller decides execution)
+}
+
+# --- ИНТЕРПРЕТАТОР КОМАНД ---
+
+# 1. Абсолютно пустой вызов — выводим полный кэшированный список
+if [ -z "$1" ]; then
+    current_hash=$(md5sum "$CONF_FILE" | cut -d' ' -f1 2>/dev/null)
+    cached_hash=$(cat "$HASH_FILE" 2>/dev/null)
+    if [ "$current_hash" != "$cached_hash" ] || [ ! -f "$CACHE_FILE" ]; then
+        compile_full_cache
+    fi
+    cat "$CACHE_FILE" 2>/dev/null
+    exit 0
+fi
+
+# 2. Флаг -m — вывод справки
+if [ "$1" = "-m" ]; then
+    shift
+    if [ -z "$1" ]; then
+        current_hash=$(md5sum "$CONF_FILE" | cut -d' ' -f1 2>/dev/null)
+        cached_hash=$(cat "$HASH_FILE" 2>/dev/null)
+        if [ "$current_hash" != "$cached_hash" ] || [ ! -f "$CACHE_FILE" ]; then
+            compile_full_cache
+        fi
+        cat "$CACHE_FILE" 2>/dev/null
+    else
+        show_single_help "$1"
+    fi
+    exit 0
+fi
+
+# 3. Интерактивный режим (вывод команды на stdout)
+if [ "$1" = "int" ]; then
+    interactive_selector
+    exit $?
+fi
+
+method_name="$1"
+shift
+
+# 4. Ленивая загрузка и вызов метода
+if load_method "$method_name"; then
+    show_logo
+    "me_method_${method_name}" "$@"
+else
+    echo "[me] Ошибка: Метод '$method_name' не найден или содержит ошибки в me.conf." >&2
+    echo "Запусти 'me' без аргументов для просмотра доступных команд." >&2
+    exit 1
+fi
