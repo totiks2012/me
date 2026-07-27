@@ -110,7 +110,7 @@ UPD-24_06_26-19:21 : Добавлен каталог с методами me_lib
 
 Решение: me
 
-me — скрипт (~/.local/bin/me) + конфиг (~/.config/me/me.conf). В конфиге описываешь методы с мета-тегами, вызываешь их одной командой.
+me — скрипт ($HOME/.local/bin/me) + конфиг (~/.config/me/me.conf). В конфиге описываешь методы с мета-тегами, вызываешь их одной командой.
 
 # Было
 aria2c --seed-time=0 --max-connection-per-server=16 --split=16 --continue=true --file-allocation=none --allow-overwrite=true --dir=/mnt/downloads "magnet:?xt=urn:btih:..."
