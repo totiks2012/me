@@ -36,7 +36,7 @@ Instead of mile‑long lines — simple verbs. Everything else lives inside meth
 ## Quick Install
 
 ```bash
-git clone https://codeberg.org/totiks2026/Me ~/.local/bin/me
+download me and unpack ~/.local/bin/me
 cd ~/.local/bin/me
 bash install_me.sh
 source ~/.profile
