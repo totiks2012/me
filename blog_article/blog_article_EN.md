@@ -220,7 +220,7 @@ me share gifx   # → ~/.local/bin/me/import/gifx.tar.gz
 me import gifx  # → extracts, adds method to me.conf, copies libraries
 ```
 
-Inside the archive — the method, dependencies (scripts from `me_lib/`, configs) and `install.sh` which does everything automatically. You can load from pastebin — `me import https://...` — and the method appears on a clean system. I don't call it "a social network for geeks" — it's just a way not to write the same thing twice.
+Inside the archive — the method, dependencies (scripts from `me_lib/`, configs) and `install.sh` which does everything automatically.  I don't call it "a social network for geeks" — it's just a way not to write the same thing twice.
 
 ### 9. RAM Caching
 
