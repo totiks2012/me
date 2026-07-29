@@ -37,7 +37,7 @@
 ## Быстрая установка
 
 ```bash
-git clone https://codeberg.org/totiks2026/Me ~/.local/bin/me
+скачать me и распаковать в  ~/.local/bin/me
 cd ~/.local/bin/me
 bash install_me.sh
 source ~/.profile
