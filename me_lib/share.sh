@@ -356,13 +356,35 @@ import_method_block() {
 }
 
 cmd_import() {
-    local source="$1"
+    local mode="single" FORCE=0 source=""
+
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -all)  mode="all" ;;
+            -diff) mode="diff" ;;
+            -f)    FORCE=1 ;;
+            -*)    echo "[me] Неизвестная опция: $1" >&2; return 1 ;;
+            *)     source="$1" ;;
+        esac
+        shift
+    done
+
+    if [ "$mode" = "all" ]; then
+        cmd_import_all "$source" "$FORCE"
+        return $?
+    fi
+    if [ "$mode" = "diff" ]; then
+        cmd_import_diff "$source"
+        return $?
+    fi
 
     if [ -z "$source" ]; then
         echo "[me] Укажи имя метода или путь к tar.gz: me import <method|file>" >&2
         echo "  me import gifx        — из ~/.local/bin/me/import/gifx.tar.gz" >&2
         echo "  me import ./pkg.tar.gz — из произвольного пути" >&2
         echo "  me import <url>       — из pastebin URL (текстовый бандл)" >&2
+        echo "  me import -all [-f] [<архив>] — batch-импорт (по умолчанию me_all.tar.gz)" >&2
+        echo "  me import -diff [<архив>]     — dry-run сравнение (по умолчанию me_all.tar.gz)" >&2
         return 1
     fi
 
@@ -482,19 +504,501 @@ cmd_import_url() {
     fi
 }
 
+# Разбивает method.block (несколько #@method:) на отдельные блоки в outdir/*.block
+split_method_blocks() {
+    local src="$1" outdir="$2"
+    local current="" outfile=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        if [[ "$line" =~ ^#@method:[[:space:]]*([^[:space:]]+)[[:space:]]*$ ]]; then
+            current="${BASH_REMATCH[1]}"
+            outfile="$outdir/$current.block"
+            : > "$outfile"
+        fi
+        if [ -n "$current" ]; then
+            printf '%s\n' "$line" >> "$outfile"
+        fi
+    done < "$src"
+    return 0
+}
+
+colorize_diff() {
+    local C_RESET=$'\033[0m' C_RED=$'\033[31m' C_GREEN=$'\033[32m' C_CYAN=$'\033[36m'
+    while IFS= read -r l; do
+        case "$l" in
+            @@*) printf '%s%s%s\n' "$C_CYAN" "$l" "$C_RESET" ;;
+            +++*) printf '%s%s%s\n' "$C_GREEN" "$l" "$C_RESET" ;;
+            ---*) printf '%s%s%s\n' "$C_RED" "$l" "$C_RESET" ;;
+            +*) printf '%s%s%s\n' "$C_GREEN" "$l" "$C_RESET" ;;
+            -*) printf '%s%s%s\n' "$C_RED" "$l" "$C_RESET" ;;
+            *) printf '%s\n' "$l" ;;
+        esac
+    done
+}
+
+# Неразрушающая пакетная установка файлов из lib/conf/root (для fallback-импорта)
+install_batch_files() {
+    local tmpdir="$1" force="$2"
+    local ok=0 skip=0 f dstdir sub rel target
+
+    for sub in "lib:$ME_LIB" "conf:$ME_DIR" "root:$ME_DIR" "confhome:$HOME/.config/me"; do
+        local srcdir="${sub%%:*}"
+        dstdir="${sub##*:}"
+        [ -d "$tmpdir/$srcdir" ] || continue
+        mkdir -p "$dstdir"
+        while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            rel="${f#"$tmpdir/$srcdir"/}"
+            target="$dstdir/$rel"
+            mkdir -p "$(dirname "$target")"
+            if [ -e "$target" ] && [ "$force" != 1 ]; then
+                echo "[SKIP] $srcdir/$rel — уже существует" >&2
+                skip=$((skip + 1))
+            else
+                cp "$f" "$target"
+                chmod +x "$target" 2>/dev/null || true
+                echo "[OK] $srcdir/$rel" >&2
+                ok=$((ok + 1))
+            fi
+        done < <(find "$tmpdir/$srcdir" -type f 2>/dev/null)
+    done
+
+    [ "$ok" -gt 0 ] || [ "$skip" -gt 0 ] && echo "[me] Файлы: [OK] $ok, [SKIP] $skip" >&2
+}
+
+# Fallback batch-импорт для архивов без install.sh
+import_batch() {
+    local tmpdir="$1" force="$2"
+    local blockfile="$tmpdir/method.block"
+    [ -f "$blockfile" ] || return 1
+
+    local blocksdir
+    blocksdir=$(mktemp -d "/tmp/me_batch_blocks_XXXXXX")
+    trap 'rm -rf "$blocksdir"' RETURN
+    split_method_blocks "$blockfile" "$blocksdir" || return 1
+
+    local ok=0 skip=0 bf name
+    for bf in "$blocksdir"/*.block; do
+        [ -f "$bf" ] || continue
+        name=$(basename "$bf" .block)
+        if grep -q "^#@method:[[:space:]]*${name}[[:space:]]*\$" "$ME_CONF" 2>/dev/null; then
+            if [ "$force" = 1 ]; then
+                import_method_block "$ME_CONF" "$name" "$(cat "$bf")" || return 1
+                echo "[OK] метод '$name' — заменён" >&2
+                ok=$((ok + 1))
+            else
+                echo "[SKIP] метод '$name' — уже существует" >&2
+                skip=$((skip + 1))
+            fi
+        else
+            import_method_block "$ME_CONF" "$name" "$(cat "$bf")" || return 1
+            echo "[OK] метод '$name' — добавлен" >&2
+            ok=$((ok + 1))
+        fi
+    done
+
+    install_batch_files "$tmpdir" "$force"
+    echo "[me] Импорт завершён: [OK] $ok, [SKIP] $skip" >&2
+    return 0
+}
+
+cmd_import_all() {
+    local source="$1" force="$2"
+    local archive=""
+
+    if [ -z "$source" ]; then
+        archive="$ME_DIR/import/me_all.tar.gz"
+        if [ ! -f "$archive" ]; then
+            echo "[me] Не найден архив по умолчанию: $archive" >&2
+            echo "[me] Сначала собери его: me share -all" >&2
+            return 1
+        fi
+    elif [ -f "$source" ]; then
+        archive="$source"
+    else
+        archive="$ME_DIR/import/${source}.tar.gz"
+        if [ ! -f "$archive" ]; then
+            echo "[me] Не найден: ни '$source' как файл, ни '${source}.tar.gz' в import/" >&2
+            return 1
+        fi
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d "/tmp/me_import_all_XXXXXX")
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    tar -xzf "$archive" -C "$tmpdir" 2>/dev/null || {
+        echo "[me] Ошибка распаковки архива" >&2
+        return 1
+    }
+
+    echo "[me] Batch-импорт: $(basename "$archive")" >&2
+
+    if [ -f "$tmpdir/install.sh" ]; then
+        if [ "$force" = 1 ]; then
+            bash "$tmpdir/install.sh" -f
+        else
+            bash "$tmpdir/install.sh"
+        fi
+        return $?
+    fi
+
+    if [ -f "$tmpdir/method.block" ]; then
+        echo "[me] В архиве нет install.sh — использую встроенный batch-импорт" >&2
+        import_batch "$tmpdir" "$force"
+        return $?
+    fi
+
+    echo "[me] Архив не содержит install.sh или method.block" >&2
+    return 1
+}
+
+diff_files() {
+    local tmpdir="$1" sub="$2" localdir="$3"
+    [ -d "$tmpdir/$sub" ] || return 0
+    local f rel
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        rel="${f#"$tmpdir/$sub"/}"
+        echo "" >&2
+        if [ -f "$localdir/$rel" ]; then
+            if diff -q "$f" "$localdir/$rel" >/dev/null 2>&1; then
+                echo "[OK] $sub/$rel — идентичен" >&2
+            else
+                echo "[DIFF] $sub/$rel — конфликт:" >&2
+                diff -u "$localdir/$rel" "$f" | colorize_diff | sed 's/^/  /' >&2
+            fi
+        else
+            echo "[OK] $sub/$rel — отсутствует локально (будет добавлен)" >&2
+        fi
+    done < <(find "$tmpdir/$sub" -type f 2>/dev/null)
+}
+
+cmd_import_diff() {
+    local source="$1"
+    local archive=""
+
+    if [ -z "$source" ]; then
+        archive="$ME_DIR/import/me_all.tar.gz"
+        if [ ! -f "$archive" ]; then
+            echo "[me] Не найден архив по умолчанию: $archive" >&2
+            echo "[me] Сначала собери его: me share -all" >&2
+            return 1
+        fi
+    elif [ -f "$source" ]; then
+        archive="$source"
+    else
+        archive="$ME_DIR/import/${source}.tar.gz"
+        if [ ! -f "$archive" ]; then
+            echo "[me] Не найден: ни '$source' как файл, ни '${source}.tar.gz' в import/" >&2
+            return 1
+        fi
+    fi
+
+    local tmpdir
+    tmpdir=$(mktemp -d "/tmp/me_diff_XXXXXX")
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    tar -xzf "$archive" -C "$tmpdir" 2>/dev/null || {
+        echo "[me] Ошибка распаковки архива" >&2
+        return 1
+    }
+
+    echo "[me] DIFF-анализ: $(basename "$archive") (dry-run, ничего не применяется)" >&2
+
+    if [ -f "$tmpdir/method.block" ]; then
+        local blocksdir
+        blocksdir=$(mktemp -d "/tmp/me_diff_blocks_XXXXXX")
+        trap 'rm -rf "$blocksdir"' RETURN
+        split_method_blocks "$tmpdir/method.block" "$blocksdir"
+
+        local bf name existing incoming tmpa tmpb
+        for bf in "$blocksdir"/*.block; do
+            [ -f "$bf" ] || continue
+            name=$(basename "$bf" .block)
+            existing=$(extract_method_block "$ME_CONF" "$name" 2>/dev/null) || existing=""
+            if [ -z "$existing" ]; then
+                echo "[OK] метод '$name' — отсутствует локально (будет добавлен)" >&2
+                continue
+            fi
+            incoming=$(cat "$bf")
+            if [ "$incoming" = "$existing" ]; then
+                echo "[OK] метод '$name' — идентичен" >&2
+            else
+                echo "[DIFF] метод '$name' — конфликт:" >&2
+                tmpa=$(mktemp "/tmp/me_da_XXXXXX")
+                tmpb=$(mktemp "/tmp/me_db_XXXXXX")
+                printf '%s\n' "$existing" > "$tmpa"
+                printf '%s\n' "$incoming" > "$tmpb"
+                diff -u "$tmpa" "$tmpb" | colorize_diff | sed 's/^/  /' >&2
+                rm -f "$tmpa" "$tmpb"
+            fi
+        done
+    fi
+
+    diff_files "$tmpdir" "lib" "$ME_LIB"
+    diff_files "$tmpdir" "conf" "$ME_DIR"
+    diff_files "$tmpdir" "root" "$ME_DIR"
+    diff_files "$tmpdir" "confhome" "$HOME/.config/me"
+
+    echo "[me] DIFF-анализ завершён. Изменения не применялись." >&2
+    return 0
+}
+
+cmd_share_all() {
+    local outname="${1:-}"
+    local tmpdir
+    tmpdir=$(mktemp -d "/tmp/me_pkg_all_XXXXXX")
+    trap 'rm -rf "$tmpdir"' RETURN
+
+    local names
+    names=$(grep -oP '^#@method:[[:space:]]*\K\S+' "$ME_CONF" 2>/dev/null | sort -u)
+    [ -z "$names" ] && { echo "[me] Нет методов в $ME_CONF" >&2; return 1; }
+
+    local count=0 name
+    : > "$tmpdir/method.block"
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        if extract_method_block "$ME_CONF" "$name" >> "$tmpdir/method.block" 2>/dev/null; then
+            count=$((count + 1))
+        else
+            echo "[me] Ошибка извлечения метода '$name' — пропуск" >&2
+        fi
+    done <<< "$names"
+
+    echo "[me] Методов упаковано: $count" >&2
+
+    local all_deps=""
+    local deps
+    while IFS= read -r name; do
+        [ -z "$name" ] && continue
+        deps=$(find_method_deps "$name") || true
+        [ -n "$deps" ] && all_deps="$all_deps"$'\n'"$deps"
+    done <<< "$names"
+
+    local dep rel dn
+    echo "$all_deps" | grep -v '^[[:space:]]*$' | sort -u | while IFS= read -r dep; do
+        [ -f "$dep" ] || continue
+        rel=$(echo "$dep" | sed "s|$ME_DIR/||")
+        dn=$(dirname "$rel")
+        if [ "$dn" = "me_lib" ]; then
+            subrel=$(echo "$rel" | sed "s|^me_lib/||")
+            mkdir -p "$tmpdir/lib/$(dirname "$subrel")"
+            cp "$dep" "$tmpdir/lib/$subrel"
+            echo "  - $rel → lib/$subrel" >&2
+        elif [ "$dn" = "." ] && [[ "$rel" == *.conf ]]; then
+            mkdir -p "$tmpdir/conf"
+            cp "$dep" "$tmpdir/conf/"
+            echo "  - $rel → conf/" >&2
+        elif [ "$dn" = "." ]; then
+            mkdir -p "$tmpdir/root"
+            cp "$dep" "$tmpdir/root/"
+            echo "  - $rel → root/" >&2
+        else
+            mkdir -p "$tmpdir/$dn"
+            cp "$dep" "$tmpdir/$dn/"
+            echo "  - $rel" >&2
+        fi
+    done
+
+    # Сопутствующие скрипты из me_lib, не упомянутые в me.conf — в архив без регистрации
+    local referenced
+    referenced=$(echo "$all_deps" | grep -v '^[[:space:]]*$' | sort -u)
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        case "$f" in
+            "$ME_LIB/"*)
+                local subrel
+                subrel="${f#"$ME_LIB"/}"
+                [ -e "$tmpdir/lib/$subrel" ] && continue
+                mkdir -p "$tmpdir/lib/$(dirname "$subrel")"
+                cp "$f" "$tmpdir/lib/$subrel"
+                echo "  - me_lib/$subrel → lib/$subrel (сопутствующий, без регистрации)" >&2
+                ;;
+        esac
+    done < <(find "$ME_LIB" -type f 2>/dev/null)
+
+    # Пользовательские конфиги из ~/.config/me/ (кроме me.conf) — в confhome/
+    local conf_dir
+    conf_dir=$(dirname "$ME_CONF")
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        [ "$(basename "$f")" = "me.conf" ] && continue
+        mkdir -p "$tmpdir/confhome"
+        cp "$f" "$tmpdir/confhome/"
+        echo "  - $(basename "$f") → confhome/ (конфиг ~/.config/me)" >&2
+    done < <(find "$conf_dir" -maxdepth 1 -type f 2>/dev/null)
+
+    generate_batch_installer "$tmpdir"
+
+    local import_dir="$ME_DIR/import"
+    mkdir -p "$import_dir"
+    local archive
+    if [ -n "$outname" ]; then
+        case "$outname" in
+            */*) archive="$outname" ;;
+            *)    archive="$import_dir/$outname" ;;
+        esac
+    else
+        archive="$import_dir/me_all.tar.gz"
+    fi
+    tar -czf "$archive" -C "$tmpdir" . 2>/dev/null
+    echo "[me] Batch-пакет: $archive" >&2
+    printf '%s\n' "$archive"
+}
+
+generate_batch_installer() {
+    local tmpdir="$1"
+    cat > "$tmpdir/install.sh" << 'BATSEOF'
+#!/usr/bin/env bash
+set -e
+
+ME_CONF="${HOME}/.config/me/me.conf"
+ME_LIB="${HOME}/.local/bin/me/me_lib"
+ME_DIR="${HOME}/.local/bin/me"
+SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+FORCE=0
+[ "${1:-}" = "-f" ] && FORCE=1
+
+BLOCK_FILE="$SELF_DIR/method.block"
+[ -f "$BLOCK_FILE" ] || { echo "[me] method.block не найден" >&2; exit 1; }
+
+bash -n "$BLOCK_FILE" 2>/dev/null || {
+    echo "[me] Ошибка синтаксиса в method.block" >&2
+    exit 1
+}
+
+BLOCKS_DIR=$(mktemp -d "/tmp/me_batch_install_XXXXXX")
+trap 'rm -rf "$BLOCKS_DIR"' RETURN EXIT
+
+current=""
+while IFS= read -r line || [ -n "$line" ]; do
+    if [[ "$line" =~ ^#@method:[[:space:]]*([^[:space:]]+)[[:space:]]*$ ]]; then
+        current="${BASH_REMATCH[1]}"
+        : > "$BLOCKS_DIR/$current.block"
+    fi
+    if [ -n "$current" ]; then
+        printf '%s\n' "$line" >> "$BLOCKS_DIR/$current.block"
+    fi
+done < "$BLOCK_FILE"
+
+apply_block() {
+    local conf="$1" name="$2" blockfile="$3"
+    local tmp
+    tmp=$(mktemp "/tmp/me_apply_XXXXXX")
+    awk -v name="$name" '
+        BEGIN { skip=0; depth=0 }
+        {
+            if ($0 ~ "^#@method:[[:space:]]*" name "[[:space:]]*$") { skip=1; next }
+            if (skip && $0 ~ "me_method_" name "\\(\\)") { depth=1; next }
+            if (skip && depth > 0) {
+                for (i=1; i<=length($0); i++) {
+                    c=substr($0,i,1)
+                    if (c=="{") depth++
+                    if (c=="}") depth--
+                }
+                if (depth <= 0) skip=0
+                next
+            }
+            if (!skip) print
+        }
+    ' "$conf" > "$tmp"
+    printf '\n' >> "$tmp"
+    cat "$blockfile" >> "$tmp"
+    mv "$tmp" "$conf"
+}
+
+OK_T=0; SKIP_T=0
+mkdir -p "$(dirname "$ME_CONF")"
+[ -f "$ME_CONF" ] || : > "$ME_CONF"
+TMP_CONF=$(mktemp "/tmp/me_batch_conf_XXXXXX.conf")
+cp "$ME_CONF" "$TMP_CONF"
+
+for bf in "$BLOCKS_DIR"/*.block; do
+    [ -f "$bf" ] || continue
+    name=$(basename "$bf" .block)
+    if grep -q "^#@method:[[:space:]]*${name}[[:space:]]*\$" "$TMP_CONF" 2>/dev/null; then
+        if [ "$FORCE" = 1 ]; then
+            apply_block "$TMP_CONF" "$name" "$bf"
+            echo "[OK] метод '$name' — заменён" >&2
+            OK_T=$((OK_T + 1))
+        else
+            echo "[SKIP] метод '$name' — уже существует" >&2
+            SKIP_T=$((SKIP_T + 1))
+        fi
+    else
+        apply_block "$TMP_CONF" "$name" "$bf"
+        echo "[OK] метод '$name' — добавлен" >&2
+        OK_T=$((OK_T + 1))
+    fi
+done
+
+bash -n "$TMP_CONF" 2>/dev/null || {
+    echo "[me] Ошибка: конфиг после установки содержит ошибки" >&2
+    rm -f "$TMP_CONF"
+    exit 1
+}
+
+install_files() {
+    local srcdir="$1" dstdir="$2" label="$3"
+    [ -d "$srcdir" ] || return 0
+    mkdir -p "$dstdir"
+    while IFS= read -r f; do
+        [ -f "$f" ] || continue
+        rel="${f#"$srcdir"/}"
+        target="$dstdir/$rel"
+        mkdir -p "$(dirname "$target")"
+        if [ -e "$target" ] && [ "$FORCE" = 0 ]; then
+            echo "[SKIP] $label/$rel — уже существует" >&2
+            SKIP_T=$((SKIP_T + 1))
+            continue
+        fi
+        cp "$f" "$target"
+        chmod +x "$target" 2>/dev/null || true
+        echo "[OK] $label/$rel" >&2
+        OK_T=$((OK_T + 1))
+    done < <(find "$srcdir" -type f 2>/dev/null)
+}
+
+install_files "$SELF_DIR/lib" "$ME_LIB" lib
+install_files "$SELF_DIR/conf" "$ME_DIR" conf
+install_files "$SELF_DIR/root" "$ME_DIR" root
+install_files "$SELF_DIR/confhome" "$HOME/.config/me" confhome
+
+cp "$TMP_CONF" "$ME_CONF"
+rm -f "$TMP_CONF"
+echo "[me] Установка завершена: [OK] $OK_T, [SKIP] $SKIP_T" >&2
+exit 0
+BATSEOF
+    chmod +x "$tmpdir/install.sh"
+}
+
+cmd_share_route() {
+    local mode="$1"
+    if [ "$mode" = "-all" ]; then
+        shift
+        cmd_share_all "$@"
+    else
+        cmd_share_package "$mode"
+    fi
+}
+
 case "${1:-}" in
     share|s)
         shift
-        cmd_share_package "${1:-}"
+        cmd_share_route "$@"
         ;;
     import|i)
         shift
-        cmd_import "${1:-}"
+        cmd_import "$@"
         ;;
     *)
         echo "Использование:" >&2
-        echo "  me share <method>            — собрать пакет в import/<method>.tar.gz" >&2
-        echo "  me import <method|file|url>  — импортировать метод" >&2
+        echo "  me share <method>                 — собрать пакет в import/<method>.tar.gz" >&2
+        echo "  me share -all [имя.tar.gz]        — собрать batch-пакет всех методов" >&2
+        echo "  me import <method|file|url>       — импортировать метод" >&2
+        echo "  me import -all [-f] [<архив>]     — batch-импорт (архив необязателен: me_all.tar.gz)" >&2
+        echo "  me import -diff [<архив>]         — dry-run сравнение (архив необязателен)" >&2
         exit 1
         ;;
 esac
