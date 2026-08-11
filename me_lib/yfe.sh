@@ -80,6 +80,17 @@ printf "%s  Дата: %s\nКатегория: %s\nКанал: %s\nСсылка: 
         --preview-window='right:50%:nowrap' 2>/dev/null | cut -f2
 }
 
+# Выбор формата: 720p по умолчанию; если 720p недоступен — уведомление и откат к 480p
+pick_fmt() {
+    local url="$1"
+    if yt-dlp --simulate --no-warnings -f "bestvideo[height=720]/best[height=720]" -O "%(format_id)s" "$url" >/dev/null 2>&1; then
+        echo "bestvideo[height<=720]+bestaudio/best[height<=720]"
+    else
+        notify-send -i dialog-warning -t 3500 "YouTube" "720p недоступен — отдаю 480p" 2>/dev/null || true
+        echo "bestvideo[height<=480]+bestaudio/best[height<=480]"
+    fi
+}
+
 case "$1" in
     --update|-r)
         update
@@ -102,7 +113,7 @@ case "$1" in
         if [ -n "$chosen" ]; then
             streamed=0
             notify-send -i video-display -t 2000 "YouTube" "Стримлю..." 2>/dev/null || true
-            if yt-dlp -g -f "best[height<=720]" "$chosen" 2>/dev/null | mpv --playlist=-; then
+            if mpv --ytdl-format="$(pick_fmt "$chosen")" "$chosen" 2>/dev/null; then
                 streamed=1
             fi
             if [ "$streamed" -eq 1 ]; then
