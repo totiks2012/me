@@ -130,7 +130,7 @@ if command -v fzf &>/dev/null && [ -t 1 ]; then
     for i in "${!probs[@]}"; do
         list+="${probs[$i]}${tab}${dets[$i]}${tab}${fixes[$i]}"$'\n'
     done
-    printf "%b" "$list" | fzf --delimiter="$tab" --with-nth=1 \
+    printf "%b" "$list" | fzf --reverse --delimiter="$tab" --with-nth=1 \
         --preview 'echo {} | tr "\t" "\n"' \
         --preview-window=wrap:right:60% \
         --header="Найдено проблем: ${#probs[@]} (Enter — закрыть)"
