@@ -36,6 +36,142 @@ load_helpers() {
 }
 load_helpers
 
+# Бронебойный экстрактор тела метода: state machine по символам,
+# не зависит от кавычек/heredoc/арифметики внутри тела.
+extract_method_body() {
+    local func_name="$1"
+    local line="" tline="" nxt="" q="" rest="" k=""
+    local mode="none" delim="" delim_tabs=0
+    local depth=0 arith=0
+    local c="" prev=""
+    local i=0 j=0 ln=0
+    local collecting=0 buf="" candidate=""
+
+    while IFS= read -r line || [ -n "$line" ]; do
+        ln=$((ln + 1))
+
+        if [ "$collecting" -eq 0 ] && [ "$mode" = "none" ] && [ "$arith" -eq 0 ] \
+            && [[ "$line" =~ ^"$func_name"\(\) ]]; then
+            collecting=1
+            buf=""
+            depth=0
+        fi
+
+        if [ "$mode" = "hd" ]; then
+            tline="$line"
+            [ "$delim_tabs" -eq 1 ] && tline="${tline#"${tline%%[!	]*}"}"
+            [ "$tline" = "$delim" ] && mode="none"
+        else
+            prev=""
+            i=0
+            while [ "$i" -lt "${#line}" ]; do
+                c="${line:$i:1}"
+                if [ "$mode" = "none" ]; then
+                    if [ "$arith" -gt 0 ]; then
+                        case "$c" in
+                            '(') [ "${line:$((i+1)):1}" = "(" ] && { arith=$((arith + 1)); i=$((i + 1)); } ;;
+                            ')') [ "${line:$((i+1)):1}" = ")" ] && { arith=$((arith - 1)); i=$((i + 1)); } ;;
+                        esac
+                    else
+                    case "$c" in
+                        "'") [ "$prev" = '$' ] && mode="aq" || mode="sq" ;;
+                        '"') mode="dq" ;;
+                        '`') mode="bt" ;;
+                        '#')
+                            if [ -z "$prev" ] || [ "$prev" = " " ] || [ "$prev" = $'\t' ] \
+                               || [ "$prev" = ";" ] || [ "$prev" = "(" ] || [ "$prev" = "|" ] \
+                               || [ "$prev" = "&" ]; then
+                                i="${#line}"; continue
+                            fi
+                            ;;
+                        '{') depth=$((depth + 1)) ;;
+                        '}') depth=$((depth - 1)) ;;
+                        '<')
+                            if [ "${line:$((i+1)):1}" = "<" ] && [ "${line:$((i+2)):1}" != "<" ]; then
+                                nxt="${line:$((i+2)):1}"
+                                case "$nxt" in
+                                    -|"'"|'"'|'\'|[A-Za-z_])
+                                        j=$((i + 2))
+                                        [ "${line:$j:1}" = "-" ] && { delim_tabs=1; j=$((j + 1)); }
+                                        nxt="${line:$j:1}"
+                                        if [ "$nxt" = "'" ] || [ "$nxt" = '"' ]; then
+                                            q="$nxt"
+                                            rest="${line:$((j + 1))}"
+                                            delim="${rest%%"$q"*}"
+                                        else
+                                            [ "$nxt" = '\' ] && j=$((j + 1))
+                                            rest="${line:$j}"
+                                            delim=""
+                                            while [ ${#rest} -gt 0 ]; do
+                                                k="${rest:0:1}"
+                                                case "$k" in
+                                                    ' '|$'\t'|';'|'|'|'('|')'|'<'|'>'|'&') break ;;
+                                                    *) delim+="$k"; rest="${rest:1}" ;;
+                                                esac
+                                            done
+                                        fi
+                                        mode="hd"
+                                        i="${#line}"; continue
+                                        ;;
+                                esac
+                            fi
+                            ;;
+                        '(')
+                            if [ "${line:$((i+1)):1}" = "(" ]; then
+                                arith=$((arith + 1)); i=$((i + 1))
+                            fi
+                            ;;
+                        ')') ;;
+                        '$')
+                            if [ "${line:$((i+1)):1}" = "(" ] && [ "${line:$((i+2)):1}" = "(" ]; then
+                                arith=$((arith + 1)); i=$((i + 2))
+                            fi
+                            ;;
+                    esac
+                    fi
+                else
+                    case "$mode" in
+                        sq) [ "$c" = "'" ] && mode="none" ;;
+                        aq)
+                            if [ "$c" = '\' ]; then i=$((i + 1))
+                            elif [ "$c" = "'" ]; then mode="none"; fi
+                            ;;
+                        dq)
+                            if [ "$c" = '\' ]; then i=$((i + 1))
+                            elif [ "$c" = '"' ]; then mode="none"; fi
+                            ;;
+                        bt)
+                            if [ "$c" = '\' ]; then i=$((i + 1))
+                            elif [ "$c" = '`' ]; then mode="none"; fi
+                            ;;
+                    esac
+                fi
+                prev="$c"
+                i=$((i + 1))
+            done
+        fi
+
+        if [ "$collecting" -eq 1 ]; then
+            buf+="$line"$'\n'
+            if [ "$mode" = "none" ] && [ "$arith" -eq 0 ] && [ "$depth" -le 0 ]; then
+                candidate="$buf"
+                if printf '%s' "$candidate" | bash -n - 2>/dev/null; then
+                    printf '%s' "$candidate"; return 0
+                fi
+                collecting=2
+            fi
+        elif [ "$collecting" -eq 2 ]; then
+            buf+="$line"$'\n'
+            if printf '%s' "$buf" | bash -n - 2>/dev/null; then
+                printf '%s' "$buf"; return 0
+            fi
+        fi
+    done < "$CONF_FILE"
+
+    [ "$collecting" -ge 1 ] && printf '%s' "$buf"
+    return 0
+}
+
 # Извлечение и проверка тела метода, загрузка только по запросу
 load_method() {
     local method_name="$1"
@@ -44,18 +180,7 @@ load_method() {
     declare -f "$func_name" >/dev/null 2>&1 && return 0
 
     local body
-    body=$(awk -v f="$func_name" '
-        $0 ~ "^" f "\\(\\).*" { flag=1; depth=1; print; next }
-        flag {
-            for (i=1; i<=length($0); i++) {
-                c = substr($0, i, 1)
-                if (c == "{") depth++
-                if (c == "}") depth--
-            }
-            print
-            if (depth <= 0) { flag=0; next }
-        }
-    ' "$CONF_FILE")
+    body=$(load_method_source "$func_name")
 
     [ -z "$body" ] && return 1
 
@@ -75,6 +200,62 @@ load_method() {
 
     eval "$body" || { echo "[me] Ошибка загрузки метода '$method_name'" >&2; return 1; }
     return 0
+}
+
+# --- Гибридный кэш методов (/dev/shm/me_$USER/methods) ---
+
+# Кэш валиден, если md5(me.conf) совпадает с .hash внутри каталога методов
+method_cache_ok() {
+    [ -f "$CACHE_DIR/methods/.hash" ] || return 1
+    local cur
+    cur=$(md5sum "$CONF_FILE" | cut -d' ' -f1 2>/dev/null)
+    [ -n "$cur" ] && [ "$cur" = "$(cat "$CACHE_DIR/methods/.hash" 2>/dev/null)" ]
+}
+
+# Атомарная пересборка кэша: сборка в tmp, затем mv (либо всё, либо ничего)
+build_method_cache() {
+    method_cache_ok && return 0
+    local tmpdir="$CACHE_DIR/methods.tmp.$$"
+    rm -rf "$tmpdir"
+    mkdir -p "$tmpdir" || return 1
+    local name="" func_name="" body="" ok=1
+    while read -r line; do
+        case "$line" in
+            "#@method:"*)
+                name=${line#*:}
+                name=${name#"${name%%[![:space:]]*}"}
+                [ -z "$name" ] && continue
+                func_name="me_method_$name"
+                body=$(extract_method_body "$func_name")
+                if [ -n "$body" ]; then
+                    printf '%s' "$body" > "$tmpdir/$func_name.sh" || ok=0
+                fi
+                ;;
+        esac
+    done < "$CONF_FILE"
+    if [ "$ok" -eq 1 ]; then
+        md5sum "$CONF_FILE" | cut -d' ' -f1 > "$tmpdir/.hash"
+        rm -rf "$CACHE_DIR/methods"
+        mv "$tmpdir" "$CACHE_DIR/methods"
+    else
+        rm -rf "$tmpdir"
+    fi
+    [ "$ok" -eq 1 ]
+}
+
+# Источник тела метода: готовый файл из кэша или экстрактор (fallback)
+load_method_source() {
+    local func_name="$1"
+    local f="$CACHE_DIR/methods/$func_name.sh"
+    if method_cache_ok && [ -f "$f" ]; then
+        cat "$f"
+        return 0
+    fi
+    if ! method_cache_ok; then
+        build_method_cache
+        if [ -f "$f" ]; then cat "$f"; return 0; fi
+    fi
+    extract_method_body "$func_name"
 }
 
 # Функция сборки полного текстового кэша (только для вызова общей справки)
@@ -129,15 +310,22 @@ show_single_help() {
 interactive_selector() {
     local list chosen cmd edited_cmd
 
-    # Сбор команд и вариантов из me.conf в формат "команда|описание|пример"
+    # Сбор команд и вариантов из me.conf в формат "команда|категория|описание|пример"
     list=$(awk '
-        BEGIN { m = ""; d = ""; e = ""; v = 0; vf = 0 }
+        BEGIN { m = ""; d = ""; e = ""; cat = ""; v = 0; vf = 0 }
         /^#@method:[ \t]*/ {
-            if (m != "" && !vf) print m "\t" d "\t" e
-            m = "me " $2; d = ""; e = ""; v = 0; vf = 0; next
+            if (m != "" && !vf) print m "\t" cat "\t" d "\t" e
+            m = "me " $2; d = ""; e = ""; cat = ""; v = 0; vf = 0; next
         }
         /^#@description:[ \t]*/ {
-            sub(/^#@description:[ \t]*/, ""); d = $0; next
+            sub(/^#@description:[ \t]*/, ""); d = $0
+            cat = ""
+            if (match(d, /^\[cat: [^]]*\] */)) {
+                cat = substr(d, RSTART, RLENGTH)
+                gsub(/[ \t]+$/, "", cat)
+                d = substr(d, RSTART + RLENGTH)
+            }
+            next
         }
         /^#@example:[ \t]*/ {
             sub(/^#@example:[ \t]*/, ""); e = $0; next
@@ -146,25 +334,24 @@ interactive_selector() {
         /^#   me / {
             if (v) {
                 sub(/^#   /, "")
-                idx = index($0, "  # ")
-                if (idx > 0) {
-                    vc = substr($0, 1, idx - 1)
+                if (match($0, /[ \t]+# /)) {
+                    vc = substr($0, 1, RSTART - 1)
                     gsub(/[ \t]+$/, "", vc)
-                    vd = substr($0, idx + 4)
+                    vd = substr($0, RSTART + RLENGTH)
                 } else {
                     vc = $0; vd = d
                 }
-                print vc "\t" vd "\t" e
+                print vc "\t" cat "\t" vd "\t" e
                 vf = 1
             }
             next
         }
         /^me_method_.*\(\)/ {
-            if (!vf && m != "") print m "\t" d "\t" e
+            if (!vf && m != "") print m "\t" cat "\t" d "\t" e
             m = ""; vf = 0; next
         }
         END {
-            if (m != "" && !vf) print m "\t" d "\t" e
+            if (m != "" && !vf) print m "\t" cat "\t" d "\t" e
         }
     ' "$CONF_FILE") || true
 
@@ -174,10 +361,10 @@ interactive_selector() {
         chosen=$(echo "$list" | fzf \
             --reverse \
             --delimiter=$'\t' \
-            --with-nth=1 \
-            --preview='printf "\033[1;32m  %s\033[0m\n  \033[0;36mПример:\033[0m %s\n" {2} {3}' \
+            --with-nth=1,2 \
+            --preview='printf "\033[1;32m  %s\033[0m\n  \033[0;36mОписание:\033[0m %s\n  \033[0;36mПример:\033[0m %s\n" {2} {3} {4}' \
             --preview-window='right:60%:wrap' \
-            --bind='f5:execute($HOME/.local/bin/me/me_lib/int_help.sh {})' \
+            --bind='f5:execute($HOME/.local/bin/me/me_lib/int_help.sh {1})' \
             --prompt='me > ' \
             2>/dev/null) || return 0
         [ -z "$chosen" ] && return 0
@@ -188,10 +375,10 @@ interactive_selector() {
         echo >&2
         local i=0
         local -a cmds=()
-        while IFS=$'\t' read -r c d e; do
+        while IFS=$'\t' read -r c cat d e; do
             i=$((i + 1))
             cmds+=("$c")
-            printf "  %2d. %s  # %s\n" "$i" "$c" "$d" >&2
+            printf "  %2d. %s  %s  # %s\n" "$i" "$c" "$cat" "$d" >&2
         done <<< "$list"
         echo >&2
         local choice
@@ -238,6 +425,18 @@ fi
 if [ "$1" = "int" ]; then
     interactive_selector
     exit $?
+fi
+
+# 3.1 Принудительная пересборка кэша методов
+if [ "$1" = "cache-rebuild" ]; then
+    rm -rf "$CACHE_DIR/methods"
+    if build_method_cache; then
+        echo "[me] Кэш методов пересобран: $CACHE_DIR/methods"
+    else
+        echo "[me] Ошибка пересборки кэша методов" >&2
+        exit 1
+    fi
+    exit 0
 fi
 
 method_name="$1"
