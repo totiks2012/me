@@ -6,7 +6,8 @@
 
 set -e
 
-CONFIG="$HOME/.local/bin/me/gifx.conf"
+CONFIG="$HOME/.config/me/gifx.conf"
+[ -f "$CONFIG" ] || CONFIG="$HOME/.local/bin/me/gifx.conf"
 [ -f "$CONFIG" ] && source "$CONFIG"
 
 : "${OUTPUT_DIR:="$HOME/Pictures/gifx"}"
@@ -68,10 +69,12 @@ trap 'kill "$ffpid" 2>/dev/null; exit' EXIT INT TERM
 notify -t 0 "gifx" "Запись... нажмите Escape для остановки"
 
 while kill -0 "$ffpid" 2>/dev/null; do
-    if read -t 0.3 -n 1 key 2>/dev/null; then
-        [ "$key" = $'\e' ] && break
+    if read -t 0.05 -n 1 key 2>/dev/null; then
+        [ "$key" = $'\e' ] && kill -INT "$ffpid" 2>/dev/null && break
     fi
 done
+notify -t 1000 "gifx" "Запись остановлена, финализация..."
+wait "$ffpid" 2>/dev/null || true
 
 notify -t 2000 "gifx" "Запись завершена, конвертация..."
 [ ! -s "$output_mp4" ] && die "Файл не создан"
@@ -81,7 +84,7 @@ if [ "$OUTPUT_FORMAT" = "gif" ]; then
     output_gif="${output_mp4%.mp4}.gif"
     sc=""
     [ "$W" -gt "$WIDTH" ] && sc="scale=$WIDTH:-1:flags=lanczos,"
-    ffmpeg -y -i "$output_mp4" -vf "${sc}split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 -loglevel error "$output_gif" 2>/dev/null
+    ffmpeg -y -i "$output_mp4" -vf "${sc}split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse" -loop 0 -loglevel error "$output_gif"
     if [ -s "$output_gif" ]; then
         rm -f "$output_mp4"
         final="$output_gif"
