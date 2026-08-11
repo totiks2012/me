@@ -5,7 +5,7 @@
 CONF_DIR="$HOME/.config/me"
 CONF_FILE="$CONF_DIR/me.conf"
 
-CACHE_DIR="/dev/shm/me_$USER"
+CACHE_DIR="$HOME/.cache/me"
 CACHE_FILE="$CACHE_DIR/me.cache"
 HASH_FILE="$CACHE_DIR/me.hash"
 
@@ -202,7 +202,10 @@ load_method() {
     return 0
 }
 
-# --- Гибридный кэш методов (/dev/shm/me_$USER/methods) ---
+# --- Кэш методов ($HOME/.cache/me/methods) — персистентный, ленивое заполнение ---
+# Переживает перезагрузку: после ребута tёплый кэш работает сразу.
+# При изменении me.conf кэш сносится целиком, но пересобирается только по мере
+# обращения к методам (инкрементно), без полной паузы.
 
 # Кэш валиден, если md5(me.conf) совпадает с .hash внутри каталога методов
 method_cache_ok() {
@@ -212,7 +215,28 @@ method_cache_ok() {
     [ -n "$cur" ] && [ "$cur" = "$(cat "$CACHE_DIR/methods/.hash" 2>/dev/null)" ]
 }
 
-# Атомарная пересборка кэша: сборка в tmp, затем mv (либо всё, либо ничего)
+# Атомарная запись файла кэша: tmp + mv (защита от гонок параллельных вызовов me)
+cache_write() {
+    local f="$1" content="$2" tmpf=""
+    mkdir -p "$(dirname "$f")" || return 1
+    tmpf="$f.tmp.$$"
+    printf '%s' "$content" > "$tmpf" || { rm -f "$tmpf"; return 1; }
+    mv "$tmpf" "$f"
+}
+
+# Инкрементная сборка: извлекает и кэширует только один запрошенный метод
+lazy_method_cache() {
+    local func_name="$1"
+    local f="$CACHE_DIR/methods/$func_name.sh"
+    local body
+    body=$(extract_method_body "$func_name")
+    [ -n "$body" ] || return 1
+    cache_write "$f" "$body" || return 1
+    cache_write "$CACHE_DIR/methods/.hash" "$(md5sum "$CONF_FILE" | cut -d' ' -f1)" || return 1
+    printf '%s' "$body"
+}
+
+# Полная пересборка кэша: сборка в tmp, затем mv (либо всё, либо ничего)
 build_method_cache() {
     method_cache_ok && return 0
     local tmpdir="$CACHE_DIR/methods.tmp.$$"
@@ -243,7 +267,7 @@ build_method_cache() {
     [ "$ok" -eq 1 ]
 }
 
-# Источник тела метода: готовый файл из кэша или экстрактор (fallback)
+# Источник тела метода: файл из кэша или инкрементная сборка
 load_method_source() {
     local func_name="$1"
     local f="$CACHE_DIR/methods/$func_name.sh"
@@ -251,11 +275,11 @@ load_method_source() {
         cat "$f"
         return 0
     fi
-    if ! method_cache_ok; then
-        build_method_cache
-        if [ -f "$f" ]; then cat "$f"; return 0; fi
+    # Кэш устарел (md5(me.conf) изменился) — снести целиком, чтобы не отдать старые тела
+    if [ -d "$CACHE_DIR/methods" ] && ! method_cache_ok; then
+        rm -rf "$CACHE_DIR/methods"
     fi
-    extract_method_body "$func_name"
+    lazy_method_cache "$func_name"
 }
 
 # Функция сборки полного текстового кэша (только для вызова общей справки)
