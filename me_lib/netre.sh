@@ -12,6 +12,13 @@ if ! command -v nmcli &>/dev/null; then
     exit 1
 fi
 
+# Если сеть отключена глобально через nmcli networking off — включаем
+if [ "$(nmcli networking 2>/dev/null)" = "disabled" ]; then
+    echo "Сеть отключена (nmcli networking off) — включаю..."
+    nmcli networking on
+    sleep 2
+fi
+
 case "$mode" in
     soft)
         echo "Мягкий перезапуск сети..."
@@ -36,6 +43,13 @@ case "$mode" in
         exit 1
         ;;
 esac
+
+# Поднимаем отключённые устройства (если сеть отключена из трея: nmcli device disconnect)
+for dev in $(timeout 10 nmcli -t -f DEVICE,TYPE,STATE device status 2>/dev/null \
+    | awk -F: '$3=="disconnected" && $2=="ethernet"{print $1}'); do
+    echo "Поднимаю отключённое устройство: $dev"
+    nmcli device connect "$dev" 2>/dev/null || true
+done
 
 echo "Ждём подъём сети..."
 tries=0
