@@ -1,11 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-$HOME/.local/bin/me/gifx_install.sh
-$HOME/.local/bin/me/scr_install.sh
-
 ME_DIR="$HOME/.local/bin/me"
 CONFIG_DEST="$HOME/.config/me"
+
+# Запуск под-инсталлятора: сначала корень me/, затем me_lib/
+run_installer() {
+    local name="$1"
+    if [ -x "$ME_DIR/$name" ]; then
+        "$ME_DIR/$name"
+    elif [ -x "$ME_DIR/me_lib/$name" ]; then
+        "$ME_DIR/me_lib/$name"
+    else
+        echo "[me] Ошибка: инсталлятор $name не найден (ни в $ME_DIR, ни в $ME_DIR/me_lib)" >&2
+        return 1
+    fi
+}
+
+run_installer gifx_install.sh
+run_installer scr_install.sh
+run_installer install_yfe.sh
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+    if command -v sudo &>/dev/null && sudo -v; then
+        SUDO="sudo"
+    else
+        echo "[me] Нужны права root: введите пароль sudo в терминале или запустите от root." >&2
+        exit 1
+    fi
+fi
 
 # 1. Добавить me в PATH и комплишн через ~/.bashrc
 if ! grep -q "me:\$PATH" "$HOME/.bashrc" 2>/dev/null; then
@@ -51,12 +75,12 @@ fi
 # 4. Установка зависимостей (ripgrep для me fi)
 if ! command -v rg &>/dev/null; then
     echo "[me] Устанавливаю ripgrep..."
-    if command -v apt-get &>/dev/null; then
-        apt-get install -y -qq ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
+if command -v apt-get &>/dev/null; then
+        $SUDO apt-get install -y -qq ripgrep && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
     elif command -v pacman &>/dev/null; then
-        pacman -S --noconfirm ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
+        $SUDO pacman -S --noconfirm ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
     elif command -v apk &>/dev/null; then
-        apk add ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
+        $SUDO apk add ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
     else
         echo "[me] Предупреждение: неизвестный пакетный менеджер, установи ripgrep вручную"
     fi
