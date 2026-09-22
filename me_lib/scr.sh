@@ -20,3 +20,4 @@ sleep "$DELAY"
 scrot -s "$OUTPUT_DIR/scrot_%Y-%m-%d_%H%M%S.png" || die "scrot не удался"
 
 notify -t 3000 "scr" "Скриншот сохранён"
+
