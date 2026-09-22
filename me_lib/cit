@@ -82,16 +82,64 @@ list_trashed() {
     echo "$out" | sed '/^$/d'
 }
 
-is_script() {
-    head -1 "$1" 2>/dev/null | grep -q '^#!'
+# Тип комментария по шебангу, при отсутствии — по расширению.
+# Для блочных языков (html/xml) возвращает открывающую `<!--`, закрывает wrap_changelog.
+comment_style() {
+    local f="$1" shebang rest int low
+    shebang=$(head -1 "$f" 2>/dev/null)
+    if [ "${shebang#\#!}" != "$shebang" ]; then
+        rest=${shebang#\#!}
+        case "$rest" in
+            *env\ *) int=${rest#*env } ;;
+            *) int=${rest##*/} ;;
+        esac
+        int=${int%% *}
+        case "$int" in
+            bash|sh|dash|zsh|ksh|python|python3|pypy|tclsh|wish|tcl|perl|ruby|fish) echo '#'; return ;;
+            node|nodejs|deno|bun|go|php) echo '//'; return ;;
+        esac
+    fi
+    low=$(basename "$f")
+    low=${low##*.}
+    low=$(echo "$low" | tr 'A-Z' 'a-z')
+    case "$low" in
+        sh|bash|py|pyw|tcl|tk|pl|rb|yml|yaml|mk|conf|ini|cfg) echo '#' ;;
+        js|mjs|cjs|ts|tsx|go|rs|java|c|h|cpp|cc|cxx|css|scss|php|swift) echo '//' ;;
+        lua|sql) echo '--' ;;
+        html|htm|xml|svg|vue) echo '<!--' ;;
+        *) echo '' ;;
+    esac
+}
+
+# Оборачивает ченджлог в комментарии нужного языка.
+# raw — строки "ts — msg" без префикса; p — префикс от comment_style.
+wrap_changelog() {
+    local raw="$1" p="$2"
+    [ -z "$p" ] && return
+    case "$p" in
+        '<!--')
+            printf '%s\n' '<!--'
+            printf '%s' "$raw" | awk 'NF { print }'
+            printf '%s\n' '-->'
+            ;;
+        *)
+            printf '%s' "$raw" | awk -v p="$p" 'NF { print p " " $0 }'
+            ;;
+    esac
 }
 
 inject_changelog() {
-    local snap="$1" msg="$2" ts="$3"
+    local snap="$1" msg="$2" ts="$3" prefix="$4"
     local tmp
     tmp=$(mktemp)
     head -1 "$snap" > "$tmp"
-    printf '# cit: %s — %s\n' "$ts" "$msg" >> "$tmp"
+    if [ "$prefix" = '<!--' ]; then
+        printf '%s\n' '<!--'
+        printf '%s\n' "cit: $ts — $msg"
+        printf '%s\n' '-->'
+    else
+        printf '%s cit: %s — %s\n' "$prefix" "$ts" "$msg"
+    fi >> "$tmp"
     tail -n +2 "$snap" >> "$tmp"
     mv "$tmp" "$snap"
 }
@@ -114,9 +162,9 @@ push_file() {
     read -r msg </dev/tty
     if [ -n "$msg" ]; then
         echo "$msg" > "$store/$ts.log"
-        if is_script "$file"; then
-            inject_changelog "$store/$ts.cit" "$msg" "$ts"
-        fi
+        local prefix
+        prefix=$(comment_style "$file")
+        [ -n "$prefix" ] && inject_changelog "$store/$ts.cit" "$msg" "$ts" "$prefix"
     else
         echo "(пусто)" > "$store/$ts.log"
     fi
@@ -159,33 +207,45 @@ if [ "${1:-}" = "-f" ]; then
     latest_ts=$(basename "$latest_snap" .cit)
     fname=$(basename "$decoded")
 
-    # Собираем все ченджлоги
-    changelog_lines=""
+    # Собираем все ченджлоги (без префикса — его добавит wrap_changelog по языку)
+    changelog_raw=""
     for s in $snaps; do
         ts=$(basename "$s" .cit)
         logfile="$store/$ts.log"
         if [ -f "$logfile" ]; then
             while IFS= read -r line; do
-                changelog_lines="$changelog_lines# $ts — $line"$'\n'
+                changelog_raw="$changelog_raw$ts — $line"$'\n'
             done < "$logfile"
         fi
     done
 
-    # Собираем контент: ченджлог + тело последнего слепка
+    # Оборачиваем ченджлог в комментарии языка файла
+    changelog_block=""
+    prefix=""
+    if [ -n "$changelog_raw" ]; then
+        prefix=$(comment_style "$decoded")
+        changelog_block=$(wrap_changelog "$changelog_raw" "$prefix")
+    fi
+
+    # Собираем контент: первая строка + ченджлог + тело слепка (без инъекции от push)
     build_content() {
-        local src="$1" cl="$2"
-        if is_script "$src"; then
-            head -1 "$src"
-            printf '%s' "$cl"
-            tail -n +2 "$src"
-        else
-            printf '%s' "$cl"
-            cat "$src"
+        local src="$1" cl="$2" pfx="$3"
+        local l2 l3 skip=1
+        l2=$(sed -n '2p' "$src")
+        l3=$(sed -n '3p' "$src")
+        case "$l2" in
+            "$pfx cit:"*) skip=2 ;;
+        esac
+        if [ "$l2" = '<!--' ] && [ "${l3#cit: }" != "$l3" ]; then
+            skip=4
         fi
+        head -1 "$src"
+        [ -n "$cl" ] && printf '%s\n' "$cl"
+        tail -n +$((skip+1)) "$src"
     }
 
     # Обновляем оригинальный файл (in-place)
-    orig_content=$(build_content "$latest_snap" "$changelog_lines")
+    orig_content=$(build_content "$latest_snap" "$changelog_block" "$prefix")
     printf '%s\n' "$orig_content" > "$decoded"
     chmod +x "$decoded" 2>/dev/null || true
 
