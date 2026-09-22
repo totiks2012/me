@@ -4,6 +4,28 @@ set -euo pipefail
 ME_DIR="$HOME/.local/bin/me"
 CONFIG_DEST="$HOME/.config/me"
 
+# 0. Права: выставить +x всем скриптам me и me_lib (по shebang), если бит не стоит
+for f in "$ME_DIR"/me* "$ME_DIR"/install_me.sh "$ME_DIR"/me_lib/*; do
+    [ -f "$f" ] || continue
+    if [ "$(head -c2 "$f" 2>/dev/null)" = "#!" ]; then
+        chmod +x "$f" 2>/dev/null || true
+    fi
+done
+
+# 0.5 Скопировать me.conf в ~/.config/me/ (не затирать существующий)
+#     ДО под-инсталляторов — иначе gifx/scr/yfe создадут урезанный me.conf
+mkdir -p "$CONFIG_DEST"
+if [ ! -f "$CONFIG_DEST/me.conf" ]; then
+    if [ -f "me.conf" ]; then
+        cp me.conf "$CONFIG_DEST/me.conf"
+    else
+        cp "$ME_DIR/me.conf" "$CONFIG_DEST/me.conf"
+    fi
+    echo "[me] me.conf скопирован в $CONFIG_DEST/"
+else
+    echo "[me] $CONFIG_DEST/me.conf уже существует — пропускаем"
+fi
+
 # Запуск под-инсталлятора: сначала корень me/, затем me_lib/
 run_installer() {
     local name="$1"
@@ -21,15 +43,15 @@ run_installer gifx_install.sh
 run_installer scr_install.sh
 run_installer install_yfe.sh
 
-SUDO=""
-if [ "$(id -u)" -ne 0 ]; then
-    if command -v sudo &>/dev/null && sudo -v; then
-        SUDO="sudo"
+# Привилегии: поднимаем sudo только в момент реальной установки пакета
+priv() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
     else
-        echo "[me] Нужны права root: введите пароль sudo в терминале или запустите от root." >&2
-        exit 1
+        echo "[me] Установка пакета требует прав root" >&2
+        sudo "$@"
     fi
-fi
+}
 
 # 1. Добавить me в PATH и комплишн через ~/.bashrc
 if ! grep -q "me:\$PATH" "$HOME/.bashrc" 2>/dev/null; then
@@ -59,28 +81,15 @@ fi
 # Применить profile в текущей сессии
 echo " необходимо вручную в терминале выполнить <source "\$HOME/.profile">"
 
-# 3. Скопировать me.conf в ~/.config/me/ (не затирать существующий)
-mkdir -p "$CONFIG_DEST"
-if [ ! -f "$CONFIG_DEST/me.conf" ]; then
-    if [ -f "me.conf" ]; then
-        cp me.conf "$CONFIG_DEST/me.conf"
-    else
-        cp "$ME_DIR/me.conf" "$CONFIG_DEST/me.conf"
-    fi
-    echo "[me] me.conf скопирован в $CONFIG_DEST/"
-else
-    echo "[me] $CONFIG_DEST/me.conf уже существует — пропускаем"
-fi
-
 # 4. Установка зависимостей (ripgrep для me fi)
 if ! command -v rg &>/dev/null; then
     echo "[me] Устанавливаю ripgrep..."
 if command -v apt-get &>/dev/null; then
-        $SUDO apt-get install -y -qq ripgrep && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
+        priv apt-get install -y -qq ripgrep && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
     elif command -v pacman &>/dev/null; then
-        $SUDO pacman -S --noconfirm ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
+        priv pacman -S --noconfirm ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
     elif command -v apk &>/dev/null; then
-        $SUDO apk add ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
+        priv apk add ripgrep 2>/dev/null && echo "[me] ripgrep установлен" || echo "[me] Предупреждение: не удалось установить ripgrep"
     else
         echo "[me] Предупреждение: неизвестный пакетный менеджер, установи ripgrep вручную"
     fi
