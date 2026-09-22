@@ -60,19 +60,37 @@ fi
 if crontab -l 2>/dev/null | grep -q "yfe-cron"; then
     echo "[install_yfe] Cron уже настроен"
 else
-    (crontab -l 2>/dev/null; echo "0 * * * * $YFE_CRON") | crontab -
-    echo "[install_yfe] Cron: обновление каждый час (без mpv)"
+    echo -n "[install_yfe] Добавить часовое обновление RSS-фидов через cron? [y/N] " >&2
+    read -r answer
+    if [[ "$answer" =~ ^[yY] ]]; then
+        (crontab -l 2>/dev/null; echo "0 * * * * $YFE_CRON") | crontab -
+        echo "[install_yfe] Cron: обновление каждый час (без mpv)"
+    else
+        echo "[install_yfe] Cron пропущен (не подтверждено)"
+    fi
 fi
 
 # 5. mpv: лимит 720p
 MPV_CONF="$HOME/.config/mpv/mpv.conf"
 if [ ! -f "$MPV_CONF" ]; then
-    mkdir -p "$(dirname "$MPV_CONF")"
-    echo 'ytdl-format=bestvideo[height<=720]+bestaudio/best[height<=720]' > "$MPV_CONF"
-    echo "[install_yfe] Создан $MPV_CONF (720p лимит)"
+    echo -n "[install_yfe] Создать ~/.config/mpv/mpv.conf с лимитом 720p? [y/N] " >&2
+    read -r answer
+    if [[ "$answer" =~ ^[yY] ]]; then
+        mkdir -p "$(dirname "$MPV_CONF")"
+        echo 'ytdl-format=bestvideo[height<=720]+bestaudio/best[height<=720]' > "$MPV_CONF"
+        echo "[install_yfe] Создан $MPV_CONF (720p лимит)"
+    else
+        echo "[install_yfe] mpv.conf пропущен (не подтверждено)"
+    fi
 elif ! grep -q "ytdl-format" "$MPV_CONF" 2>/dev/null; then
-    echo 'ytdl-format=bestvideo[height<=720]+bestaudio/best[height<=720]' >> "$MPV_CONF"
-    echo "[install_yfe] Добавлен 720p лимит в $MPV_CONF"
+    echo -n "[install_yfe] Добавить лимит 720p в $MPV_CONF? [y/N] " >&2
+    read -r answer
+    if [[ "$answer" =~ ^[yY] ]]; then
+        echo 'ytdl-format=bestvideo[height<=720]+bestaudio/best[height<=720]' >> "$MPV_CONF"
+        echo "[install_yfe] Добавлен 720p лимит в $MPV_CONF"
+    else
+        echo "[install_yfe] mpv.conf пропущен (не подтверждено)"
+    fi
 else
     echo "[install_yfe] mpv.conf уже настроен"
 fi
