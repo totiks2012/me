@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title>SYMBIOT E-Reader v1.23</title>
+    <style>
+        :root { --bg: #ffffff; --tx: #1a1a1a; --fs: 18px; --ff: serif; }
+        body { background: #111; font-family: var(--ff); font-size: var(--fs); margin: 0; padding: 0; min-height: 100vh; display: flex; justify-content: center; }
+
+        #viewer {
+            background: var(--bg); color: var(--tx); width: 1000px; min-height: 100vh;
+            padding: 60px 150px 100px 150px; box-sizing: border-box;
+            box-shadow: 0 0 60px rgba(0,0,0,0.9); text-align: justify; text-justify: inter-word;
+            line-height: 1.6; cursor: text;
+        }
+
+        #viewer p { margin: 1em 0; text-indent: 1.5em; }
+        #viewer p.dialogue { text-indent: 0; margin-left: 0; }
+        #viewer p.verse { font-style: italic; padding-left: 2em; white-space: pre-wrap; }
+        #viewer .fb2-section { margin: 0.5em 0; }
+        .fb2-title { font-weight: bold; font-size: 1.6em; display: block; text-align: center; border-bottom: 2px solid var(--tx); margin: 2em 0 1em; text-indent: 0; padding-bottom: 15px; }
+
+        .toolbar {
+            position: fixed; bottom: -130px; left: 0; width: 100%;
+            background: #1a1a1a; color: #fff; padding: 15px;
+            display: flex; gap: 12px; align-items: center; justify-content: center;
+            transition: bottom 0.25s ease-in-out; box-shadow: 0 -10px 40px rgba(0,0,0,0.8); z-index: 999; border-top: 1px solid #333;
+        }
+        .toolbar.show { bottom: 0; }
+
+        #progress-bar { position: fixed; top: 0; left: 0; height: 4px; background: #4a9; width: 0%; z-index: 1000; transition: width 0.2s; }
+        #progress-info { font-family: monospace; font-size: 12px; color: #aaa; min-width: 45px; }
+
+        button, input, select { cursor: pointer; font-family: monospace; padding: 8px; border-radius: 4px; border: 1px solid #555; background: #eee; }
+    </style>
+</head>
+<body>
+    <div id="progress-bar"></div>
+    <div id="viewer">Загрузите книгу (Правый клик для настроек)</div>
+
+    <div class="toolbar" id="tb">
+        <input type="file" id="fIn" accept=".txt,.fb2" style="display:none">
+        <button id="openBtn">ОТКРЫТЬ</button>
+        <select id="ffS"><option value="serif">Serif</option><option value="sans-serif">Sans</option><option value="monospace">Mono</option></select>
+        <input type="number" id="sz" min="14" max="72" value="18" style="width:60px">
+        <input type="color" id="bgC" title="Лист"><input type="color" id="txC" title="Текст">
+        <button id="bmAdd">📌 ЗАКЛАДКА</button>
+        <select id="bmList"><option value="">🔖 Список закладок</option></select>
+        <div id="progress-info">0%</div>
+        <button id="resetBtn" style="background:#522; color:#fff; border:none;">СБРОС</button>
+        <button id="lBtn">LOG</button>
+    </div>
+
+    <script>
+        const $ = id => document.getElementById(id);
+        const log = (a, r, c = "") => localStorage.setItem('log_last', `TIME=${new Date().toISOString()} ACTION=${a} RESULT=${r} CONTEXT=${c}`);
+
+        let defaults = { bg: '#ffffff', tx: '#1a1a1a', sz: 18, ff: 'serif', scroll: 0 };
+        let state = JSON.parse(localStorage.getItem('sym_ui'));
+        if (!state || typeof state !== 'object') state = { ...defaults };
+        let db, currentBook, scrollTimer;
+
+        const dbOp = () => new Promise(res => {
+            try {
+                const req = indexedDB.open("SymDB", 1);
+                req.onupgradeneeded = () => req.result.createObjectStore("data");
+                req.onsuccess = () => { db = req.result; res(); };
+                req.onerror = () => { db = null; res(); };
+            } catch { db = null; res(); }
+        });
+
+        const dbPut = (k, v) => new Promise(res => {
+            if (!db) { res(); return; }
+            try {
+                const tx = db.transaction("data", "readwrite");
+                tx.objectStore("data").put(v, k);
+                tx.oncomplete = () => res();
+                tx.onerror = () => res();
+            } catch { res(); }
+        });
+
+        const dbGet = (k) => new Promise(res => {
+            if (!db) { res(null); return; }
+            try {
+                const req = db.transaction("data").objectStore("data").get(k);
+                req.onsuccess = () => res(req.result);
+                req.onerror = () => res(null);
+            } catch { res(null); }
+        });
+
+        function saveState() {
+            localStorage.setItem('sym_ui', JSON.stringify(state));
+        }
+
+        function updateProgress() {
+            const pos = window.scrollY, h = document.body.scrollHeight - window.innerHeight;
+            const pct = h > 0 ? Math.round((pos / h) * 100) : 0;
+            $('progress-bar').style.width = pct + '%';
+            $('progress-info').textContent = pct + '%';
+            state.scroll = pos;
+            clearTimeout(scrollTimer);
+            scrollTimer = setTimeout(saveState, 200);
+        }
+
+        function applyStyles() {
+            const r = document.documentElement.style;
+            r.setProperty('--bg', state.bg); r.setProperty('--tx', state.tx);
+            r.setProperty('--fs', state.sz + 'px'); r.setProperty('--ff', state.ff);
+            $('bgC').value = state.bg; $('txC').value = state.tx;
+            $('sz').value = state.sz; $('ffS').value = state.ff;
+        }
+
+        function renderBookmarks() {
+            const sel = $('bmList');
+            sel.innerHTML = '<option value="">🔖 Список закладок</option>';
+            if (!currentBook?.bookmarks) return;
+            currentBook.bookmarks.forEach((bm, idx) => {
+                const opt = document.createElement('option');
+                opt.value = idx; opt.textContent = bm.label;
+                sel.appendChild(opt);
+            });
+        }
+
+        async function setBook(txt, name, isFB2) {
+            const existing = currentBook?.bookmarks || [];
+            currentBook = { txt, isFB2: isFB2 ?? txt.includes('<description'), name, bookmarks: existing };
+            await dbPut("book", currentBook);
+            render(currentBook.txt, currentBook.isFB2);
+            renderBookmarks();
+            setTimeout(() => window.scrollTo(0, state.scroll), 150);
+        }
+
+        function decodeBook(buf, isFB2) {
+            const head = new TextDecoder("utf-8").decode(buf.slice(0, 300));
+            if (isFB2) {
+                const m = head.match(/encoding=["']([^"']+)["']/i);
+                if (m) {
+                    const enc = m[1].toLowerCase();
+                    if (enc !== 'utf-8' && enc !== 'unicode') {
+                        try { return new TextDecoder(enc).decode(buf); } catch {}
+                    }
+                }
+            }
+            try { return new TextDecoder("utf-8", { fatal: true }).decode(buf); }
+            catch { return new TextDecoder("windows-1251").decode(buf); }
+        }
+
+        function isDialogue(t) {
+            return /^[\s]*[—\-]/.test(t);
+        }
+
+        function renderFB2Children(parent, container, binaries) {
+            parent.childNodes.forEach(node => {
+                if (node.nodeType === 3) {
+                    const txt = node.textContent;
+                    if (txt) container.appendChild(document.createTextNode(txt));
+                    return;
+                }
+                if (node.nodeType !== 1) return;
+                const tag = node.tagName.toLowerCase();
+                if (tag === 'section') {
+                    const div = document.createElement('div');
+                    div.className = 'fb2-section';
+                    renderFB2Children(node, div, binaries);
+                    container.appendChild(div);
+                } else if (tag === 'title') {
+                    const t = document.createElement('div');
+                    t.className = 'fb2-title';
+                    renderFB2Children(node, t, binaries);
+                    container.appendChild(t);
+                } else if (tag === 'p') {
+                    const p = document.createElement('p');
+                    renderFB2Children(node, p, binaries);
+                    const txt = p.textContent.trim();
+                    if (!txt && !p.querySelector('img')) return;
+                    if (isDialogue(txt)) p.className = 'dialogue';
+                    container.appendChild(p);
+                } else if (tag === 'v') {
+                    const v = document.createElement('p');
+                    v.className = 'verse';
+                    renderFB2Children(node, v, binaries);
+                    container.appendChild(v);
+                } else if (tag === 'image') {
+                    const href = node.getAttribute('href') || node.getAttributeNS('http://www.w3.org/1999/xlink', 'href');
+                    if (href && binaries?.has(href)) {
+                        const bin = binaries.get(href);
+                        const img = document.createElement('img');
+                        img.src = 'data:' + bin.contentType + ';base64,' + bin.data;
+                        img.style.maxWidth = '100%'; img.style.display = 'block'; img.style.margin = '1em auto';
+                        container.appendChild(img);
+                    }
+                } else if (tag === 'empty-line') {
+                    container.appendChild(document.createElement('br'));
+                } else {
+                    renderFB2Children(node, container, binaries);
+                }
+            });
+        }
+
+        function renderTXT(txt, container) {
+            const blocks = txt.split(/\n\s*\n/);
+            for (let block of blocks) {
+                block = block.trim();
+                if (!block) continue;
+                const lines = block.split('\n').filter(l => l.trim());
+                if (lines.length > 0 && lines.every(l => isDialogue(l.trim()))) {
+                    lines.forEach(line => {
+                        const p = document.createElement('p');
+                        p.className = 'dialogue';
+                        p.textContent = line.trim();
+                        container.appendChild(p);
+                    });
+                } else {
+                    const p = document.createElement('p');
+                    p.textContent = lines.join(' ');
+                    container.appendChild(p);
+                }
+            }
+        }
+
+        function render(txt, isFB2) {
+            const v = $('viewer');
+            v.innerHTML = '';
+            if (isFB2) {
+                const xml = new DOMParser().parseFromString(txt, "text/xml");
+                const err = xml.querySelector('parsererror');
+                if (err) {
+                    v.innerHTML = '<p style="color:red;text-align:center;">Ошибка разбора FB2</p>';
+                    log("FB2_PARSE", "FAIL", err.textContent.substring(0, 200));
+                    return;
+                }
+                const b = xml.querySelector('body');
+                const binaries = new Map();
+                xml.querySelectorAll('binary').forEach(bin => {
+                    const id = bin.getAttribute('id');
+                    const ct = bin.getAttribute('content-type');
+                    if (id && ct) binaries.set('#' + id, { contentType: ct, data: bin.textContent.trim() });
+                });
+                if (b) renderFB2Children(b, v, binaries);
+            } else {
+                renderTXT(txt, v);
+            }
+        }
+
+        async function main() {
+            try {
+                await dbOp();
+                const params = new URLSearchParams(location.search);
+                const bookPath = params.get('book');
+                if (bookPath) {
+                    try {
+                        const resp = await fetch(bookPath);
+                        if (resp.ok) {
+                            const txt = decodeBook(new Uint8Array(await resp.arrayBuffer()), true);
+                            setBook(txt, bookPath);
+                            log("BOOK_URL", "OK", bookPath);
+                        } else {
+                            $('viewer').innerHTML = `<p style="color:red;text-align:center;">Ошибка: не удалось загрузить книгу</p>`;
+                        }
+                    } catch(e) { log("BOOK_URL", "FAIL", e.message); }
+                }
+
+                document.addEventListener('contextmenu', e => { e.preventDefault(); $('tb').classList.toggle('show'); });
+
+                $('openBtn').onclick = () => $('fIn').click();
+                $('fIn').onchange = async e => {
+                    const f = e.target.files[0]; if (!f) return;
+                    const isFB2 = f.name.toLowerCase().endsWith('.fb2');
+                    const txt = decodeBook(await f.arrayBuffer(), isFB2);
+                    await setBook(txt, f.name, isFB2);
+                    log("FILE_LOAD", "OK", f.name);
+                };
+
+                $('bgC').oninput = e => { state.bg = e.target.value; applyStyles(); saveState(); };
+                $('txC').oninput = e => { state.tx = e.target.value; applyStyles(); saveState(); };
+                $('sz').oninput = e => { const v = +e.target.value; if (v >= 6) { state.sz = v; applyStyles(); saveState(); } };
+                $('ffS').onchange = e => { state.ff = e.target.value; applyStyles(); saveState(); };
+
+                $('bmAdd').onclick = () => {
+                    if (!currentBook) return;
+                    const selTxt = window.getSelection().toString().substring(0, 20);
+                    const label = prompt("Название закладки:", selTxt || "Закладка");
+                    if (label) {
+                        currentBook.bookmarks = currentBook.bookmarks || [];
+                        currentBook.bookmarks.push({ pos: window.scrollY, label });
+                        dbPut("book", currentBook); renderBookmarks();
+                        log("BM_ADD", "OK", label);
+                    }
+                };
+
+                $('bmList').onchange = e => {
+                    const idx = e.target.value;
+                    if (idx !== "" && currentBook?.bookmarks[idx]) {
+                        window.scrollTo(0, currentBook.bookmarks[idx].pos);
+                        log("BM_JUMP", "OK", currentBook.bookmarks[idx].label);
+                    }
+                };
+
+                $('resetBtn').onclick = () => { if(confirm("Сбросить всё?")) { localStorage.clear(); indexedDB.deleteDatabase("SymDB"); location.reload(); } };
+                $('lBtn').onclick = () => {
+                    const last = localStorage.getItem('log_last') || 'NONE';
+                    alert(last);
+                };
+
+                window.onscroll = updateProgress;
+                applyStyles();
+
+                const saved = await dbGet("book");
+                if (saved) {
+                    currentBook = saved;
+                    render(currentBook.txt, currentBook.isFB2);
+                    renderBookmarks();
+                    setTimeout(() => window.scrollTo(0, state.scroll), 150);
+                    log("DB_RESTORE", "OK", currentBook.name || 'unknown');
+                }
+
+                log("INIT", "OK", "v1.23");
+            } catch (e) { log("INIT", "FAIL", e.message); }
+        }
+        window.onload = main;
+    </script>
+</body>
+</html>
