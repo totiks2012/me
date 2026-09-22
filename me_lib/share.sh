@@ -382,18 +382,12 @@ cmd_import() {
         echo "[me] Укажи имя метода или путь к tar.gz: me import <method|file>" >&2
         echo "  me import gifx        — из ~/.local/bin/me/import/gifx.tar.gz" >&2
         echo "  me import ./pkg.tar.gz — из произвольного пути" >&2
-        echo "  me import <url>       — из pastebin URL (текстовый бандл)" >&2
         echo "  me import -all [-f] [<архив>] — batch-импорт (по умолчанию me_all.tar.gz)" >&2
         echo "  me import -diff [<архив>]     — dry-run сравнение (по умолчанию me_all.tar.gz)" >&2
         return 1
     fi
 
     local archive=""
-
-    if [[ "$source" =~ ^https?:// ]]; then
-        cmd_import_url "$source"
-        return $?
-    fi
 
     if [ -f "$source" ]; then
         archive="$source"
@@ -441,67 +435,6 @@ cmd_import() {
 
     echo "[me] Архив не содержит method.block или install.sh" >&2
     return 1
-}
-
-cmd_import_url() {
-    local source="$1"
-    local raw
-
-    echo "[me] Скачиваю $source ..." >&2
-    raw=$(curl -sfL "$source" 2>/dev/null) || {
-        echo "[me] Ошибка загрузки $source" >&2
-        return 1
-    }
-
-    [ -z "$raw" ] && { echo "[me] Пустой ответ" >&2; return 1; }
-
-    local method_block libs_block
-    if echo "$raw" | grep -q '^=== ME-LIB:'; then
-        method_block=$(echo "$raw" | sed -n '1,/^=== ME-LIB:/p' | sed '$d')
-        libs_block=$(echo "$raw" | sed -n '/^=== ME-LIB:/,$p')
-    else
-        method_block="$raw"
-        libs_block=""
-    fi
-
-    method_block=$(echo "$method_block" | sed '/^#!/d')
-
-    local method_name
-    method_name=$(echo "$method_block" | grep -oP '^#@method:\s*\K\S+' | head -1)
-    [ -z "$method_name" ] && { echo "[me] #@method: не найден" >&2; return 1; }
-
-    if grep -q "^#@method:[[:space:]]*$method_name[[:space:]]*\$" "$ME_CONF" 2>/dev/null; then
-        echo -n "[me] Метод '$method_name' уже существует. Заменить? [y/N] " >&2
-        read -r answer
-        if [[ ! "$answer" =~ ^[yY] ]]; then
-            echo "[me] Отменено." >&2
-            return 0
-        fi
-    fi
-
-    import_method_block "$ME_CONF" "$method_name" "$method_block" || return 1
-    echo "[me] Метод '$method_name' импортирован." >&2
-
-    if [ -n "$libs_block" ]; then
-        local count=0 lib_name="" lib_content=""
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^'=== ME-LIB: '([^ ]+)' ==='$ ]]; then
-                if [ -n "$lib_name" ] && [ -n "$lib_content" ]; then
-                    install_lib_script "$lib_name" "${lib_content%$'\n'}"
-                    count=$((count + 1))
-                fi
-                lib_name="${BASH_REMATCH[1]}"
-                lib_content=""
-            elif [ -n "$lib_name" ]; then
-                lib_content="${lib_content}${line}"$'\n'
-            fi
-        done <<< "$libs_block"
-        if [ -n "$lib_name" ] && [ -n "$lib_content" ]; then
-            install_lib_script "$lib_name" "${lib_content%$'\n'}"
-            count=$((count + 1))
-        fi
-        [ "$count" -gt 0 ] && echo "[me] Скриптов импортировано: $count" >&2
-    fi
 }
 
 # Разбивает method.block (несколько #@method:) на отдельные блоки в outdir/*.block
@@ -996,7 +929,7 @@ case "${1:-}" in
         echo "Использование:" >&2
         echo "  me share <method>                 — собрать пакет в import/<method>.tar.gz" >&2
         echo "  me share -all [имя.tar.gz]        — собрать batch-пакет всех методов" >&2
-        echo "  me import <method|file|url>       — импортировать метод" >&2
+        echo "  me import <method|file>        — импортировать метод" >&2
         echo "  me import -all [-f] [<архив>]     — batch-импорт (архив необязателен: me_all.tar.gz)" >&2
         echo "  me import -diff [<архив>]         — dry-run сравнение (архив необязателен)" >&2
         exit 1
