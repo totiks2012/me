@@ -2,10 +2,10 @@
 # wfb.sh — Open book in WReader
 # Usage:
 #   wfb.sh                    — читает путь из буфера обмена, запускает se-go сервер
-#   wfb.sh /path/to/book.fb2  — использует переданный путь,  bypass клипборда
+#   wfb.sh /path/to/book.fb2  — использует переданный путь, bypass клипборда
+#   wfb.sh --direct /path     — file:// режим (без сервера)
 
-
-WREADER_DIR="$HOME/.local/bin/wreader"
+WREADER_DIR="$HOME/.local/bin/me/me_lib/wfb_assets"
 UI_DIR="$WREADER_DIR/ui"
 WREADER_HTML="$UI_DIR/index.html"
 SEGO_BIN="$WREADER_DIR/se-go"
