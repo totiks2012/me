@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 ME_CONF="${HOME}/.config/me/me.conf"
+CONF_DIR="${HOME}/.config/me"
 ME_LIB="${HOME}/.local/bin/me/me_lib"
 ME_DIR="${HOME}/.local/bin/me"
 
@@ -48,6 +49,8 @@ find_refs_in() {
     echo "$text" | grep -oE '\$HOME/\.local/bin/me/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
     echo "$text" | grep -oE "$HOME/[^'\'\"']*me_lib/[a-zA-Z0-9_.-]+" 2>/dev/null
     echo "$text" | grep -oE "$HOME/\.local/bin/me/[a-zA-Z0-9_.-]+" 2>/dev/null
+    echo "$text" | grep -oE '\$HOME/\.config/me/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
+    echo "$text" | grep -oE "$HOME/\.config/me/[a-zA-Z0-9_.-]+" 2>/dev/null
 }
 
 find_method_deps() {
@@ -61,7 +64,9 @@ find_method_deps() {
     local item
 
     while IFS= read -r item; do
-        [ -f "$item" ] && queue+=("$item")
+        [ -f "$item" ] || continue
+        [ "$item" = "$ME_CONF" ] && continue
+        queue+=("$item")
     done <<< "$(find_refs_in "$body" | sort -u)"
 
     seen=""
@@ -76,7 +81,10 @@ find_method_deps() {
         local content
         content=$(cat "$item" 2>/dev/null) || continue
         while IFS= read -r ref; do
-            [ -f "$ref" ] && echo "$seen" | grep -qF "$ref" || queue+=("$ref")
+            [ -f "$ref" ] || continue
+            [ "$ref" = "$ME_CONF" ] && continue
+            echo "$seen" | grep -qF "$ref" && continue
+            queue+=("$ref")
         done <<< "$(find_refs_in "$content" | sort -u)"
     done
 
@@ -84,9 +92,9 @@ find_method_deps() {
 }
 
 install_lib_script() {
-    local name="$1" content="$2"
+    local name="$1" content="$2" force="${3:-0}"
     local target="$ME_LIB/$name"
-    if [ -f "$target" ]; then
+    if [ -f "$target" ] && [ "$force" != 1 ]; then
         echo -n "[me] Скрипт '$name' уже существует. Заменить? [y/N] " >&2
         read -r answer
         if [[ ! "$answer" =~ ^[yY] ]]; then
@@ -94,6 +102,8 @@ install_lib_script() {
             return
         fi
         echo "[me]   $name — заменён" >&2
+    elif [ -f "$target" ]; then
+        echo "[me]   $name — заменён (force)" >&2
     else
         echo "[me]   $name — добавлен" >&2
     fi
@@ -130,6 +140,19 @@ ME_CONF="${HOME}/.config/me/me.conf"
 ME_LIB="${HOME}/.local/bin/me/me_lib"
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+FORCE=0
+[ "${1:-}" = "-f" ] && FORCE=1
+
+mkdir -p "$(dirname "$ME_CONF")"
+[ -f "$ME_CONF" ] || : > "$ME_CONF"
+
+ask_replace() {
+    [ "$FORCE" = 1 ] && return 0
+    echo -n "[me] $1 существует. Заменить? [y/N] " >&2
+    read -r answer
+    [[ "$answer" =~ ^[yY] ]]
+}
+
 METHOD_BLOCK=$(cat "$SELF_DIR/method.block")
 METHOD_NAME=$(echo "$METHOD_BLOCK" | grep -oP '^#@method:\s*\K\S+' | head -1)
 [ -z "$METHOD_NAME" ] && { echo "[me] #@method: не найден" >&2; exit 1; }
@@ -140,9 +163,11 @@ echo "$METHOD_BLOCK" | bash -n /dev/stdin 2>/dev/null || {
 }
 
 if grep -q "^#@method:[[:space:]]*${METHOD_NAME}[[:space:]]*\$" "$ME_CONF" 2>/dev/null; then
-    echo -n "[me] Метод '${METHOD_NAME}' существует. Заменить? [y/N] " >&2
-    read -r answer
-    [[ "$answer" =~ ^[yY] ]] || { echo "[me] Отменено" >&2; exit 0; }
+    if [ "$FORCE" != 1 ]; then
+        echo -n "[me] Метод '${METHOD_NAME}' существует. Заменить? [y/N] " >&2
+        read -r answer
+        [[ "$answer" =~ ^[yY] ]] || { echo "[me] Отменено" >&2; exit 0; }
+    fi
 fi
 
 TMP_CONF=$(mktemp "/tmp/me_install_XXXXXX.conf")
@@ -171,67 +196,37 @@ bash -n "$TMP_CONF" 2>/dev/null || {
     rm -f "$TMP_CONF"
     exit 1
 }
+[ -s "$ME_CONF" ] && cp "$ME_CONF" "$ME_CONF.bak.$(date +%s)"
 cp "$TMP_CONF" "$ME_CONF"
 rm -f "$TMP_CONF"
 echo "[me] Метод '${METHOD_NAME}' — OK" >&2
 
-if [ -d "$SELF_DIR/lib" ]; then
-    mkdir -p "$ME_LIB"
-    for f in "$SELF_DIR/lib/"*; do
-        [ -f "$f" ] || continue
-        bn=$(basename "$f")
-        if [ -f "$ME_LIB/$bn" ]; then
-            echo -n "[me] $bn существует. Заменить? [y/N] " >&2
-            read -r answer
-            if [[ ! "$answer" =~ ^[yY] ]]; then
-                echo "[me]   $bn — пропущен" >&2
-                continue
+if [ -d "$SELF_DIR/lib" ] || [ -d "$SELF_DIR/conf" ] || [ -d "$SELF_DIR/root" ] || [ -d "$SELF_DIR/confhome" ]; then
+    install_files() {
+        local srcdir="$1" dstdir="$2" msg
+        [ -d "$srcdir" ] || return 0
+        mkdir -p "$dstdir"
+        for f in "$srcdir/"*; do
+            [ -f "$f" ] || continue
+            bn=$(basename "$f")
+            if [ -e "$dstdir/$bn" ]; then
+                if ! ask_replace "$bn"; then
+                    echo "[me]   $bn — пропущен" >&2
+                    continue
+                fi
+                msg="заменён"
+            else
+                msg="добавлен"
             fi
-            echo "[me]   $bn — заменён" >&2
-        else
-            echo "[me]   $bn — добавлен" >&2
-        fi
-        cp "$f" "$ME_LIB/$bn"
-        chmod +x "$ME_LIB/$bn"
-    done
-fi
-
-if [ -d "$SELF_DIR/conf" ]; then
-    for f in "$SELF_DIR/conf/"*; do
-        [ -f "$f" ] || continue
-        bn=$(basename "$f")
-        if [ -f "$HOME/.local/bin/me/$bn" ]; then
-            echo -n "[me] $bn существует. Заменить? [y/N] " >&2
-            read -r answer
-            if [[ ! "$answer" =~ ^[yY] ]]; then
-                echo "[me]   $bn — пропущен" >&2
-                continue
-            fi
-            echo "[me]   $bn — заменён" >&2
-        else
-            echo "[me]   $bn — conf" >&2
-        fi
-        cp "$f" "$HOME/.local/bin/me/"
-    done
-fi
-
-if [ -d "$SELF_DIR/root" ]; then
-    for f in "$SELF_DIR/root/"*; do
-        [ -f "$f" ] || continue
-        bn=$(basename "$f")
-        if [ -f "$HOME/.local/bin/me/$bn" ]; then
-            echo -n "[me] $bn существует. Заменить? [y/N] " >&2
-            read -r answer
-            if [[ ! "$answer" =~ ^[yY] ]]; then
-                echo "[me]   $bn — пропущен" >&2
-                continue
-            fi
-            echo "[me]   $bn — заменён" >&2
-        else
-            echo "[me]   $bn — root" >&2
-        fi
-        cp "$f" "$HOME/.local/bin/me/"
-    done
+            cp "$f" "$dstdir/$bn"
+            chmod +x "$dstdir/$bn" 2>/dev/null || true
+            echo "[me]   $bn — $msg" >&2
+        done
+    }
+    install_files "$SELF_DIR/lib" "$ME_LIB"
+    install_files "$SELF_DIR/conf" "$HOME/.local/bin/me"
+    install_files "$SELF_DIR/root" "$HOME/.local/bin/me"
+    install_files "$SELF_DIR/confhome" "$HOME/.config/me"
 fi
 
 echo "[me] Установка завершена." >&2
@@ -257,6 +252,16 @@ cmd_share_package() {
         echo "[me] Найдены зависимости:" >&2
         while IFS= read -r dep; do
             [ -f "$dep" ] || continue
+            if [[ "$dep" == "$CONF_DIR/"* ]]; then
+                [ "$(basename "$dep")" = "me.conf" ] && {
+                    echo "  - me.conf — пропущен (не упаковывается)" >&2
+                    continue
+                }
+                mkdir -p "$tmpdir/confhome"
+                cp "$dep" "$tmpdir/confhome/"
+                echo "  - $(basename "$dep") → confhome/" >&2
+                continue
+            fi
             local rel
             rel=$(echo "$dep" | sed "s|$ME_DIR/||")
             local dn
@@ -382,6 +387,7 @@ cmd_import() {
         echo "[me] Укажи имя метода или путь к tar.gz: me import <method|file>" >&2
         echo "  me import gifx        — из ~/.local/bin/me/import/gifx.tar.gz" >&2
         echo "  me import ./pkg.tar.gz — из произвольного пути" >&2
+        echo "  me import -f <архив|method>       — импорт без вопросов (force)" >&2
         echo "  me import -all [-f] [<архив>] — batch-импорт (по умолчанию me_all.tar.gz)" >&2
         echo "  me import -diff [<архив>]     — dry-run сравнение (по умолчанию me_all.tar.gz)" >&2
         return 1
@@ -409,7 +415,11 @@ cmd_import() {
     }
 
     if [ -f "$tmpdir/install.sh" ]; then
-        bash "$tmpdir/install.sh"
+        if [ "$FORCE" = 1 ]; then
+            bash "$tmpdir/install.sh" -f
+        else
+            bash "$tmpdir/install.sh"
+        fi
         return $?
     fi
 
@@ -424,7 +434,7 @@ cmd_import() {
                 local count=0
                 for f in "$tmpdir/lib/"*; do
                     [ -f "$f" ] || continue
-                    install_lib_script "$(basename "$f")" "$(cat "$f")"
+                    install_lib_script "$(basename "$f")" "$(cat "$f")" "$FORCE"
                     count=$((count + 1))
                 done
                 [ "$count" -gt 0 ] && echo "[me] Скриптов импортировано: $count" >&2
@@ -711,6 +721,13 @@ cmd_share_all() {
     local dep rel dn
     echo "$all_deps" | grep -v '^[[:space:]]*$' | sort -u | while IFS= read -r dep; do
         [ -f "$dep" ] || continue
+        if [[ "$dep" == "$CONF_DIR/"* ]]; then
+            [ "$(basename "$dep")" = "me.conf" ] && continue
+            mkdir -p "$tmpdir/confhome"
+            cp "$dep" "$tmpdir/confhome/"
+            echo "  - $(basename "$dep") → confhome/ (конфиг ~/.config/me)" >&2
+            continue
+        fi
         rel=$(echo "$dep" | sed "s|$ME_DIR/||")
         dn=$(dirname "$rel")
         if [ "$dn" = "me_lib" ]; then
@@ -750,16 +767,8 @@ cmd_share_all() {
         esac
     done < <(find "$ME_LIB" -type f 2>/dev/null)
 
-    # Пользовательские конфиги из ~/.config/me/ (кроме me.conf) — в confhome/
-    local conf_dir
-    conf_dir=$(dirname "$ME_CONF")
-    while IFS= read -r f; do
-        [ -f "$f" ] || continue
-        [ "$(basename "$f")" = "me.conf" ] && continue
-        mkdir -p "$tmpdir/confhome"
-        cp "$f" "$tmpdir/confhome/"
-        echo "  - $(basename "$f") → confhome/ (конфиг ~/.config/me)" >&2
-    done < <(find "$conf_dir" -maxdepth 1 -type f 2>/dev/null)
+    # Пользовательские конфиги из ~/.config/me/ (кроме me.conf) в confhome/ попадают
+    # автоматически через find_method_deps — только реально используемые методом файлы.
 
     generate_batch_installer "$tmpdir"
 
@@ -898,6 +907,7 @@ install_files "$SELF_DIR/conf" "$ME_DIR" conf
 install_files "$SELF_DIR/root" "$ME_DIR" root
 install_files "$SELF_DIR/confhome" "$HOME/.config/me" confhome
 
+[ -s "$ME_CONF" ] && cp "$ME_CONF" "$ME_CONF.bak.$(date +%s)"
 cp "$TMP_CONF" "$ME_CONF"
 rm -f "$TMP_CONF"
 echo "[me] Установка завершена: [OK] $OK_T, [SKIP] $SKIP_T" >&2
@@ -930,6 +940,7 @@ case "${1:-}" in
         echo "  me share <method>                 — собрать пакет в import/<method>.tar.gz" >&2
         echo "  me share -all [имя.tar.gz]        — собрать batch-пакет всех методов" >&2
         echo "  me import <method|file>        — импортировать метод" >&2
+        echo "  me import -f <архив|method>       — импорт без вопросов (force)" >&2
         echo "  me import -all [-f] [<архив>]     — batch-импорт (архив необязателен: me_all.tar.gz)" >&2
         echo "  me import -diff [<архив>]         — dry-run сравнение (архив необязателен)" >&2
         exit 1
