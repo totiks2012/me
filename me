@@ -36,142 +36,6 @@ load_helpers() {
 }
 load_helpers
 
-# Бронебойный экстрактор тела метода: state machine по символам,
-# не зависит от кавычек/heredoc/арифметики внутри тела.
-extract_method_body() {
-    local func_name="$1"
-    local line="" tline="" nxt="" q="" rest="" k=""
-    local mode="none" delim="" delim_tabs=0
-    local depth=0 arith=0
-    local c="" prev=""
-    local i=0 j=0 ln=0
-    local collecting=0 buf="" candidate=""
-
-    while IFS= read -r line || [ -n "$line" ]; do
-        ln=$((ln + 1))
-
-        if [ "$collecting" -eq 0 ] && [ "$mode" = "none" ] && [ "$arith" -eq 0 ] \
-            && [[ "$line" =~ ^"$func_name"\(\) ]]; then
-            collecting=1
-            buf=""
-            depth=0
-        fi
-
-        if [ "$mode" = "hd" ]; then
-            tline="$line"
-            [ "$delim_tabs" -eq 1 ] && tline="${tline#"${tline%%[!	]*}"}"
-            [ "$tline" = "$delim" ] && mode="none"
-        else
-            prev=""
-            i=0
-            while [ "$i" -lt "${#line}" ]; do
-                c="${line:$i:1}"
-                if [ "$mode" = "none" ]; then
-                    if [ "$arith" -gt 0 ]; then
-                        case "$c" in
-                            '(') [ "${line:$((i+1)):1}" = "(" ] && { arith=$((arith + 1)); i=$((i + 1)); } ;;
-                            ')') [ "${line:$((i+1)):1}" = ")" ] && { arith=$((arith - 1)); i=$((i + 1)); } ;;
-                        esac
-                    else
-                    case "$c" in
-                        "'") [ "$prev" = '$' ] && mode="aq" || mode="sq" ;;
-                        '"') mode="dq" ;;
-                        '`') mode="bt" ;;
-                        '#')
-                            if [ -z "$prev" ] || [ "$prev" = " " ] || [ "$prev" = $'\t' ] \
-                               || [ "$prev" = ";" ] || [ "$prev" = "(" ] || [ "$prev" = "|" ] \
-                               || [ "$prev" = "&" ]; then
-                                i="${#line}"; continue
-                            fi
-                            ;;
-                        '{') depth=$((depth + 1)) ;;
-                        '}') depth=$((depth - 1)) ;;
-                        '<')
-                            if [ "${line:$((i+1)):1}" = "<" ] && [ "${line:$((i+2)):1}" != "<" ]; then
-                                nxt="${line:$((i+2)):1}"
-                                case "$nxt" in
-                                    -|"'"|'"'|'\'|[A-Za-z_])
-                                        j=$((i + 2))
-                                        [ "${line:$j:1}" = "-" ] && { delim_tabs=1; j=$((j + 1)); }
-                                        nxt="${line:$j:1}"
-                                        if [ "$nxt" = "'" ] || [ "$nxt" = '"' ]; then
-                                            q="$nxt"
-                                            rest="${line:$((j + 1))}"
-                                            delim="${rest%%"$q"*}"
-                                        else
-                                            [ "$nxt" = '\' ] && j=$((j + 1))
-                                            rest="${line:$j}"
-                                            delim=""
-                                            while [ ${#rest} -gt 0 ]; do
-                                                k="${rest:0:1}"
-                                                case "$k" in
-                                                    ' '|$'\t'|';'|'|'|'('|')'|'<'|'>'|'&') break ;;
-                                                    *) delim+="$k"; rest="${rest:1}" ;;
-                                                esac
-                                            done
-                                        fi
-                                        mode="hd"
-                                        i="${#line}"; continue
-                                        ;;
-                                esac
-                            fi
-                            ;;
-                        '(')
-                            if [ "${line:$((i+1)):1}" = "(" ]; then
-                                arith=$((arith + 1)); i=$((i + 1))
-                            fi
-                            ;;
-                        ')') ;;
-                        '$')
-                            if [ "${line:$((i+1)):1}" = "(" ] && [ "${line:$((i+2)):1}" = "(" ]; then
-                                arith=$((arith + 1)); i=$((i + 2))
-                            fi
-                            ;;
-                    esac
-                    fi
-                else
-                    case "$mode" in
-                        sq) [ "$c" = "'" ] && mode="none" ;;
-                        aq)
-                            if [ "$c" = '\' ]; then i=$((i + 1))
-                            elif [ "$c" = "'" ]; then mode="none"; fi
-                            ;;
-                        dq)
-                            if [ "$c" = '\' ]; then i=$((i + 1))
-                            elif [ "$c" = '"' ]; then mode="none"; fi
-                            ;;
-                        bt)
-                            if [ "$c" = '\' ]; then i=$((i + 1))
-                            elif [ "$c" = '`' ]; then mode="none"; fi
-                            ;;
-                    esac
-                fi
-                prev="$c"
-                i=$((i + 1))
-            done
-        fi
-
-        if [ "$collecting" -eq 1 ]; then
-            buf+="$line"$'\n'
-            if [ "$mode" = "none" ] && [ "$arith" -eq 0 ] && [ "$depth" -le 0 ]; then
-                candidate="$buf"
-                if printf '%s' "$candidate" | bash -n - 2>/dev/null; then
-                    printf '%s' "$candidate"; return 0
-                fi
-                collecting=2
-            fi
-        elif [ "$collecting" -eq 2 ]; then
-            buf+="$line"$'\n'
-            if printf '%s' "$buf" | bash -n - 2>/dev/null; then
-                printf '%s' "$buf"; return 0
-            fi
-        fi
-    done < "$CONF_FILE"
-
-    [ "$collecting" -ge 1 ] && printf '%s' "$buf"
-    return 0
-}
-
 # Извлечение и проверка тела метода, загрузка только по запросу
 load_method() {
     local method_name="$1"
@@ -215,59 +79,111 @@ method_cache_ok() {
     [ -n "$cur" ] && [ "$cur" = "$(cat "$CACHE_DIR/methods/.hash" 2>/dev/null)" ]
 }
 
-# Атомарная запись файла кэша: tmp + mv (защита от гонок параллельных вызовов me)
-cache_write() {
-    local f="$1" content="$2" tmpf=""
-    mkdir -p "$(dirname "$f")" || return 1
-    tmpf="$f.tmp.$$"
-    printf '%s' "$content" > "$tmpf" || { rm -f "$tmpf"; return 1; }
-    mv "$tmpf" "$f"
-}
-
-# Инкрементная сборка: извлекает и кэширует только один запрошенный метод
-lazy_method_cache() {
-    local func_name="$1"
-    local f="$CACHE_DIR/methods/$func_name.sh"
-    local body
-    body=$(extract_method_body "$func_name")
-    [ -n "$body" ] || return 1
-    cache_write "$f" "$body" || return 1
-    cache_write "$CACHE_DIR/methods/.hash" "$(md5sum "$CONF_FILE" | cut -d' ' -f1)" || return 1
-    printf '%s' "$body"
-}
-
 # Полная пересборка кэша: сборка в tmp, затем mv (либо всё, либо ничего)
 build_method_cache() {
     method_cache_ok && return 0
     local tmpdir="$CACHE_DIR/methods.tmp.$$"
     rm -rf "$tmpdir"
     mkdir -p "$tmpdir" || return 1
-    local name="" func_name="" body="" ok=1
-    while read -r line; do
-        case "$line" in
-            "#@method:"*)
-                name=${line#*:}
-                name=${name#"${name%%[![:space:]]*}"}
-                [ -z "$name" ] && continue
-                func_name="me_method_$name"
-                body=$(extract_method_body "$func_name")
-                if [ -n "$body" ]; then
-                    printf '%s' "$body" > "$tmpdir/$func_name.sh" || ok=0
-                fi
-                ;;
-        esac
-    done < "$CONF_FILE"
-    if [ "$ok" -eq 1 ]; then
-        md5sum "$CONF_FILE" | cut -d' ' -f1 > "$tmpdir/.hash"
-        rm -rf "$CACHE_DIR/methods"
-        mv "$tmpdir" "$CACHE_DIR/methods"
-    else
-        rm -rf "$tmpdir"
-    fi
-    [ "$ok" -eq 1 ]
+    awk -v outdir="$tmpdir" '
+    function reset() {
+        in_func = 0; func_start = 0; depth = 0; func_name = ""; buf = ""
+        mode = ""; delim = ""; delim_tabs = 0; arith = 0; prev = ""
+    }
+    BEGIN { reset() }
+    {
+        if (mode == "hd") {
+            tline = $0
+            if (delim_tabs) sub(/^\t*/, "", tline)
+            if (tline ~ ("^\\" delim "$") || tline == delim) mode = ""
+        } else {
+            n = length($0)
+            start = 1
+            if (!in_func || func_start) start = n + 1
+            for (i = 1; i <= n; i++) {
+                c = substr($0, i, 1)
+                if (!in_func) {
+                    if (i == 1 && $0 ~ /^me_method_[a-zA-Z0-9_]+\(\)/) {
+                        func_name = $0
+                        match(func_name, /me_method_[a-zA-Z0-9_]+/)
+                        func_name = substr(func_name, RSTART, RLENGTH)
+                        in_func = 1; func_start = 0; depth = 0; buf = ""
+                        start = i
+                    }
+                    continue
+                }
+                if (mode == "") {
+                    if (arith > 0) {
+                        if (c == "(") { nx = substr($0, i + 1, 1); if (nx == "(") { arith++; i++ } }
+                        else if (c == ")") { nx = substr($0, i + 1, 1); if (nx == ")") { arith--; i++ } }
+                    } else if (c == "\"") mode = "dq"
+                    else if (c == "\047") { nx = substr($0, i + 1, 1); mode = (nx == "\\" || nx == "\047") ? "sq" : "sq" }
+                    else if (c == "`") mode = "bt"
+                    else if (c == "<") {
+                        if (substr($0, i + 1, 1) == "<") {
+                            nx = substr($0, i + 2, 1)
+                            if (nx == "-" || nx == "\047" || nx == "\"" || nx ~ /[A-Za-z_]/) {
+                                j = i + 1
+                                if (substr($0, j + 1, 1) == "-") { delim_tabs = 1; j++ }
+                                nx = substr($0, j + 1, 1)
+                                if (nx == "\047" || nx == "\"") {
+                                    q = nx; rest = substr($0, j + 2)
+                                    p = index(rest, q)
+                                    delim = (p > 0) ? substr(rest, 1, p - 1) : rest
+                                } else {
+                                    rest = substr($0, j + 1)
+                                    delim = ""
+                                    for (k = 1; k <= length(rest); k++) {
+                                        ch = substr(rest, k, 1)
+                                        if (ch ~ /[ \t;|()<>&]/) break
+                                        delim = delim ch
+                                    }
+                                }
+                                mode = "hd"
+                            }
+                        }
+                    } else if (c == "{") {
+                        if (func_start) { func_start = 0 }
+                        else depth++
+                    } else if (c == "}") {
+                        if (!func_start) depth--
+                    } else if (c == "(") {
+                        if (substr($0, i + 1, 1) == "(") { arith++; i++ }
+                    } else if (c == "$") {
+                        if (substr($0, i + 1, 1) == "(" && substr($0, i + 2, 1) == "(") { arith++; i += 2 }
+                    } else if (c == "#") {
+                        pv = substr($0, i - 1, 1)
+                        if (pv == "" || pv == " " || pv == "\t" || pv == ";" || pv == "(" || pv == "|" || pv == "&")
+                            i = n
+                    }
+                } else if (mode == "dq" || mode == "bt") {
+                    if (c == "\\") i++
+                    else if (c == "\"" && mode == "dq") mode = ""
+                    else if (c == "`" && mode == "bt") mode = ""
+                } else if (mode == "sq") {
+                    if (c == "\047") mode = ""
+                }
+            }
+        }
+        if (in_func) {
+            buf = buf $0 "\n"
+            if (mode == "" && arith == 0 && depth <= 0 && !func_start) {
+                sub(/\n$/, "", buf)
+                file = outdir "/" func_name ".sh"
+                printf "%s", buf > file
+                close(file)
+                reset()
+            }
+        }
+    }
+    ' "$CONF_FILE"
+    md5sum "$CONF_FILE" | cut -d' ' -f1 > "$tmpdir/.hash"
+    rm -rf "$CACHE_DIR/methods"
+    mv "$tmpdir" "$CACHE_DIR/methods"
+    return 0
 }
 
-# Источник тела метода: файл из кэша или инкрементная сборка
+# Источник тела метода: файл из кэша или быстрая полная пересборка (awk 0.03s)
 load_method_source() {
     local func_name="$1"
     local f="$CACHE_DIR/methods/$func_name.sh"
@@ -275,11 +191,10 @@ load_method_source() {
         cat "$f"
         return 0
     fi
-    # Кэш устарел (md5(me.conf) изменился) — снести целиком, чтобы не отдать старые тела
-    if [ -d "$CACHE_DIR/methods" ] && ! method_cache_ok; then
-        rm -rf "$CACHE_DIR/methods"
-    fi
-    lazy_method_cache "$func_name"
+    # Кэш устарел или файла нет: дешёвая инвлидация + полная сборка одним проходом awk
+    rm -rf "$CACHE_DIR/methods"
+    build_method_cache || return 1
+    [ -f "$f" ] && cat "$f"
 }
 
 # Функция сборки полного текстового кэша (только для вызова общей справки)
