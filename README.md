@@ -101,7 +101,7 @@ echo "Привет, терминал!"
 
 Открой ~/.config/me/me.conf и добавь объявление:   
 
-`Bash#@method: hello
+`#@method: hello
 
 #@description: Моя первая команда
 
