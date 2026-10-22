@@ -90,16 +90,21 @@ me
 Создай файл ~/.local/bin/me/me_lib/hello.sh:
 
 `#!/usr/bin/env bash
-echo "Привет, терминал!"
-Сделай его исполняемым:Bashchmod +x ~/.local/bin/me/me_lib/hello.sh`
+
+echo "Привет, терминал!"`
+
+Сделай его исполняемым: `chmod +x ~/.local/bin/me/me_lib/hello.sh`
 
 Шаг 2. Зарегистрируй метод в me.conf
 
 Открой ~/.config/me/me.conf и добавь объявление:   
 
 `Bash#@method: hello
+
 #@description: Моя первая команда
+
 #@example: me hello
+
 #@script: me_lib/hello.sh`
 
 Важно: Можно прописывать как относительный путь от ~/.local/bin/me/ (me_lib/hello.sh), 
