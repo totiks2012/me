@@ -89,9 +89,11 @@ me
 
 Создай файл ~/.local/bin/me/me_lib/hello.sh:
 
-`#!/usr/bin/env bash
+```bash
+#!/usr/bin/env bash
 
-echo "Привет, терминал!"`
+echo "Привет, терминал!"
+```
 
 Сделай его исполняемым: `chmod +x ~/.local/bin/me/me_lib/hello.sh`
 
