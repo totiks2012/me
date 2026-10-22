@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# me create — интерактивное создание метода в me.conf
-# Спрашивает имя, описание, команду — генерирует me_method_*() с мета-тегами
+# me create — интерактивное создание метода в me.conf (архитектура без eval).
+# Спрашивает имя, описание, путь к бинарнику/скрипту — генерирует лаунчер в
+# me_lib/<имя>.sh и мета-блок (#@method/#@description/#@example/#@script) в me.conf.
 
 CONF_FILE="$HOME/.config/me/me.conf"
+ME_BASE="$HOME/.local/bin/me"
+ME_LIB="$ME_BASE/me_lib"
 
 name=""
 desc=""
-cmd=""
 example=""
+target=""
+args_mode=""
 
 echo "=== Создание нового метода для me ==="
 echo
@@ -39,53 +43,73 @@ while true; do
 done
 
 echo
-echo "Введите команду — bash-код, который будет выполняться:"
-echo "(примеры: playerctl play 2>/dev/null || true"
-echo "          \$HOME/.local/bin/me/me_lib/my_script.sh \"\$@\""
+echo "Путь к бинарнику или скрипту, который будет запускать метод:"
+echo "(примеры: /usr/bin/playerctl play 2>/dev/null || true"
+echo "          \$HOME/.local/bin/my_script.sh"
 echo "          notify-send -i info \"Заголовок\" \"Текст\")"
 echo
 while true; do
-    read -p "> " cmd
-    [ -n "$cmd" ] && break
-    echo "Команда не может быть пустой." >&2
+    read -p "> " target
+    [ -n "$target" ] && break
+    echo "Команда не может быть пустым." >&2
 done
 
+echo
+echo "Создаю лаунчер из команды: '$target'"
 echo
 read -p "Пример (Enter = 'me $name'): " example
 [ -z "$example" ] && example="me $name"
 
+# --- Лаунчер-скрипт: bash -n до записи на диск ---
+mkdir -p "$ME_LIB"
+launcher="$ME_LIB/${name}.sh"
+tmp_launcher=$(mktemp /tmp/me_create_XXXXXX.sh)
+{
+    printf '#!/usr/bin/env bash\n'
+    printf '# Метод: %s\n' "$name"
+    printf '# Описание: %s\n' "$desc"
+    printf '# Создан: %s\n' "$(date '+%d-%m-%Y %H:%M')"
+    printf '\n'
+    printf 'exec %s "$@"\n' "$target"
+} > "$tmp_launcher"
+
+if ! bash -n "$tmp_launcher" 2>/dev/null; then
+    echo "[me] Ошибка: синтаксическая ошибка в сгенерированном лаунчере." >&2
+    bash -n "$tmp_launcher" 2>&1 | sed 's/^/  /' >&2
+    rm -f "$tmp_launcher"
+    exit 1
+fi
+
+# --- Мета-блок в me.conf (#@script: указывает на лаунчер) ---
 block="#@method: $name
 #@description: $desc
 #@example: $example
-me_method_${name}() {
-    $cmd
-}"
+#@script: me_lib/${name}.sh"
 
 echo
 echo "--- Будет добавлено в $CONF_FILE ---"
 echo "$block"
 echo "------------------------------------"
+echo "Лаунчер: $launcher"
+echo
 
 read -p $'\nДобавить? (Y/n): ' confirm
 case "$confirm" in
-    n|N|no|NO) echo "Отменено."; exit 0 ;;
+    n|N|no|NO) echo "Отменено."; rm -f "$tmp_launcher"; exit 0 ;;
 esac
 
-tmpfile=$(mktemp /tmp/me_create_XXXXXX.sh)
-echo "$block" > "$tmpfile"
-if ! bash -n "$tmpfile" 2>/dev/null; then
-    echo "[me] Ошибка: синтаксическая ошибка в сгенерированном коде." >&2
-    bash -n "$tmpfile" 2>&1 | sed 's/^/  /' >&2
-    rm -f "$tmpfile"
-    exit 1
-fi
-rm -f "$tmpfile"
+# --- Запись: лаунчер на место, мета-блок в конец me.conf ---
+install -m 755 "$tmp_launcher" "$launcher"
+rm -f "$tmp_launcher"
 
+mkdir -p "$(dirname "$CONF_FILE")"
 if [ -s "$CONF_FILE" ] && [ "$(tail -c 1 "$CONF_FILE" | wc -l)" -eq 0 ]; then
     echo "" >> "$CONF_FILE"
 fi
 echo "" >> "$CONF_FILE"
 echo "$block" >> "$CONF_FILE"
 
-echo "Метод '$name' создан в $CONF_FILE."
-echo "Запусти: me $name"
+echo "Метод '$name' создан."
+echo "Лаунчер:   $launcher"
+echo "Конфиг:    $CONF_FILE (+ блок #@script:)"
+echo "Запусти:   me $name"
