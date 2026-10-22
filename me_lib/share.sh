@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# cit: share.sh__22-10-2026_19-57-43 — рефакторинг скрипта по контракту @script
 
 ME_CONF="${HOME}/.config/me/me.conf"
 CONF_DIR="${HOME}/.config/me"
@@ -58,12 +59,13 @@ resolve_script() {
 
 find_refs_in() {
     local text="$1"
-    echo "$text" | grep -oE '\$HOME/[^'\'\"']*me_lib/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
-    echo "$text" | grep -oE '\$HOME/\.local/bin/me/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
-    echo "$text" | grep -oE "$HOME/[^'\'\"']*me_lib/[a-zA-Z0-9_.-]+" 2>/dev/null
-    echo "$text" | grep -oE "$HOME/\.local/bin/me/[a-zA-Z0-9_.-]+" 2>/dev/null
-    echo "$text" | grep -oE '\$HOME/\.config/me/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
-    echo "$text" | grep -oE "$HOME/\.config/me/[a-zA-Z0-9_.-]+" 2>/dev/null
+    text=$(printf '%s\n' "$text" | grep -v '^[[:space:]]*#')
+    printf '%s\n' "$text" | grep -oE '\$HOME/[^'\'\"']*me_lib/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
+    printf '%s\n' "$text" | grep -oE '\$HOME/\.local/bin/me/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
+    printf '%s\n' "$text" | grep -oE "$HOME/[^'\'\"']*me_lib/[a-zA-Z0-9_.-]+" 2>/dev/null
+    printf '%s\n' "$text" | grep -oE "$HOME/\.local/bin/me/[a-zA-Z0-9_.-]+" 2>/dev/null
+    printf '%s\n' "$text" | grep -oE '\$HOME/\.config/me/[a-zA-Z0-9_.-]+' 2>/dev/null | sed "s|\$HOME|$HOME|"
+    printf '%s\n' "$text" | grep -oE "$HOME/\.config/me/[a-zA-Z0-9_.-]+" 2>/dev/null
 }
 
 find_method_deps() {
@@ -172,7 +174,7 @@ ask_replace() {
 }
 
 METHOD_BLOCK=$(cat "$SELF_DIR/method.block")
-METHOD_NAME=$(echo "$METHOD_BLOCK" | grep -oP '^#@method:\s*\K\S+' | head -1)
+METHOD_NAME=$(echo "$METHOD_BLOCK" | awk '/^#@method:/ {print $2; exit}')
 [ -z "$METHOD_NAME" ] && { echo "[me] #@method: не найден" >&2; exit 1; }
 
 echo "$METHOD_BLOCK" | bash -n /dev/stdin 2>/dev/null || {
@@ -411,7 +413,7 @@ cmd_import() {
         local block
         block=$(cat "$tmpdir/method.block")
         local mname
-        mname=$(echo "$block" | grep -oP '^#@method:\s*\K\S+' | head -1)
+        mname=$(echo "$block" | awk '/^#@method:/ {print $2; exit}')
         [ -n "$mname" ] && block_has_script "$block" && import_method_block "$ME_CONF" "$mname" "$block" && {
             echo "[me] Метод '$mname' импортирован." >&2
             if [ -d "$tmpdir/lib" ]; then
@@ -689,7 +691,7 @@ cmd_share_all() {
     trap 'rm -rf "$tmpdir"' RETURN
 
     local names
-    names=$(grep -oP '^#@method:[[:space:]]*\K\S+' "$ME_CONF" 2>/dev/null | sort -u)
+    names=$(awk '/^#@method:/ {print $2}' "$ME_CONF" 2>/dev/null | sort -u)
     [ -z "$names" ] && { echo "[me] Нет методов в $ME_CONF" >&2; return 1; }
 
     local count=0 name
