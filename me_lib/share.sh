@@ -5,42 +5,55 @@ CONF_DIR="${HOME}/.config/me"
 ME_LIB="${HOME}/.local/bin/me/me_lib"
 ME_DIR="${HOME}/.local/bin/me"
 
+# Извлечение мета-блока метода из me.conf по контракту #@script:
+# (без тел функций: от строки #@method: <name> до следующего #@method: или EOF)
 extract_method_block() {
     local conf="$1" name="$2"
-    local state=0 depth=0 line
+    local in_block=0
+    local -a lines=()
+    local line
 
     while IFS= read -r line || [ -n "$line" ]; do
-        case $state in
-            0)
-                if [[ "$line" =~ ^#@method:[[:space:]]*"$name"[[:space:]]*$ ]]; then
-                    printf '%s\n' "$line"
-                    state=1
-                fi
-                ;;
-            1)
-                printf '%s\n' "$line"
-                if [[ "$line" =~ ^me_method_"$name"\(\)[[:space:]]*\{ ]]; then
-                    depth=1
-                    state=2
-                fi
-                ;;
-            2)
-                local t="$line"
-                while [[ "$t" =~ [\{\}] ]]; do
-                    local c="${BASH_REMATCH[0]}"
-                    [[ "$c" == "{" ]] && ((depth++))
-                    [[ "$c" == "}" ]] && ((depth--))
-                    t="${t#*"$c"}"
-                done
-                printf '%s\n' "$line"
-                if (( depth <= 0 )); then
-                    return 0
-                fi
-                ;;
-        esac
+        if [ "$in_block" -eq 0 ]; then
+            if [[ "$line" =~ ^#@method:[[:space:]]*"$name"[[:space:]]*$ ]]; then
+                in_block=1
+                lines+=("$line")
+            fi
+        else
+            if [[ "$line" =~ ^#@method:[[:space:]]*[^[:space:]]+[[:space:]]*$ ]]; then
+                break
+            fi
+            lines+=("$line")
+        fi
     done < "$conf"
 
-    return 1
+    [ "$in_block" -eq 0 ] && return 1
+
+    local last=${#lines[@]}
+    while [ "$last" -gt 0 ] && [[ -z "${lines[$((last - 1))]//[[:space:]]/}" ]]; do
+        last=$((last - 1))
+    done
+
+    local j
+    for ((j = 0; j < last; j++)); do
+        printf '%s\n' "${lines[$j]}"
+    done
+    return 0
+}
+
+# Резолв пути скрипта из #@script: (семантика движка `me` в script_dir())
+resolve_script() {
+    local name="$1"
+    awk -v t="$name" '
+        /^#@method:[ \t]*/ { m = $2 }
+        m == t && /^#@script:[ \t]*/ {
+            sub(/^#@script:[ \t]*/, "")
+            print
+            exit
+        }
+        m != "" && m != t && /^#@script:/ { m = "" }
+    ' "$ME_CONF"
+    return 0
 }
 
 find_refs_in() {
@@ -55,21 +68,20 @@ find_refs_in() {
 
 find_method_deps() {
     local name="$1"
-    local body seen
+    local rpath srp
 
-    body=$(extract_method_block "$ME_CONF" "$name") 2>/dev/null || return 1
+    rpath=$(resolve_script "$name")
+    [ -z "$rpath" ] && return 0
+    case "$rpath" in
+        /*) srp="$rpath" ;;
+        *)  srp="$ME_DIR/$rpath" ;;
+    esac
+    [ -f "$srp" ] || return 0
 
     local -a deps=()
-    local -a queue=()
-    local item
+    local -a queue=("$srp")
+    local item seen=""
 
-    while IFS= read -r item; do
-        [ -f "$item" ] || continue
-        [ "$item" = "$ME_CONF" ] && continue
-        queue+=("$item")
-    done <<< "$(find_refs_in "$body" | sort -u)"
-
-    seen=""
     while [ ${#queue[@]} -gt 0 ]; do
         item="${queue[0]}"
         queue=("${queue[@]:1}")
@@ -109,6 +121,12 @@ install_lib_script() {
     fi
     printf '%s\n' "$content" > "$target"
     chmod +x "$target" 2>/dev/null || true
+}
+
+# Гард контракта: блок метода обязан содержать #@script:
+# (старые пакеты — блоки с телом me_method_* без #@script: — не импортируются)
+block_has_script() {
+    grep -q '^#@script:' <<< "$1"
 }
 
 cmd_share() {
@@ -172,21 +190,11 @@ fi
 
 TMP_CONF=$(mktemp "/tmp/me_install_XXXXXX.conf")
 awk -v name="$METHOD_NAME" '
-BEGIN { skip=0; depth=0 }
-{
-    if ($0 ~ "^#@method:[[:space:]]*" name "[[:space:]]*$") { skip=1; next }
-    if (skip && $0 ~ "me_method_" name "\\(\\)") { depth=1; next }
-    if (skip && depth > 0) {
-        for (i=1; i<=length($0); i++) {
-            c=substr($0,i,1)
-            if (c=="{") depth++
-            if (c=="}") depth--
-        }
-        if (depth <= 0) skip=0
-        next
+    /^#@method:[ \t]*/ {
+        if ($2 == name) { skip = 1; next }
+        skip = 0
     }
-    if (!skip) print
-}
+    !skip { print }
 ' "$ME_CONF" > "$TMP_CONF"
 
 printf '\n%s\n' "$METHOD_BLOCK" >> "$TMP_CONF"
@@ -298,49 +306,19 @@ cmd_share_package() {
 
 import_method_block() {
     local conf="$1" name="$2" block="$3"
-    local start_line=0 end_line=0 state=0 depth=0 line_num=0 line
-
-    while IFS= read -r line || [ -n "$line" ]; do
-        line_num=$((line_num + 1))
-        case $state in
-            0)
-                if [[ "$line" =~ ^#@method:[[:space:]]*"$name"[[:space:]]*$ ]]; then
-                    start_line=$line_num
-                    state=1
-                fi
-                ;;
-            1)
-                if [[ "$line" =~ ^me_method_"$name"\(\)[[:space:]]*\{ ]]; then
-                    depth=1
-                    state=2
-                fi
-                ;;
-            2)
-                local t="$line"
-                while [[ "$t" =~ [\{\}] ]]; do
-                    local c="${BASH_REMATCH[0]}"
-                    [[ "$c" == "{" ]] && ((depth++))
-                    [[ "$c" == "}" ]] && ((depth--))
-                    t="${t#*"$c"}"
-                done
-                if (( depth <= 0 )); then
-                    end_line=$line_num
-                    break
-                fi
-                ;;
-        esac
-    done < "$conf"
-
     local tmp
     tmp=$(mktemp "/tmp/me_import_XXXXXX")
     trap 'rm -f "$tmp"' RETURN
 
-    if [ "$start_line" -gt 0 ] && [ "$end_line" -gt 0 ]; then
-        {
-            head -n "$((start_line - 1))" "$conf"
-            printf '%s\n' "$block"
-            tail -n +"$((end_line + 1))" "$conf"
-        } > "$tmp"
+    if grep -q "^#@method:[[:space:]]*${name}[[:space:]]*$" "$conf"; then
+        awk -v name="$name" '
+            /^#@method:[ \t]*/ {
+                if ($2 == name) { skip = 1; next }
+                skip = 0
+            }
+            !skip { print }
+        ' "$conf" > "$tmp"
+        printf '\n%s\n' "$block" >> "$tmp"
     else
         {
             cat "$conf"
@@ -414,6 +392,12 @@ cmd_import() {
         return 1
     }
 
+    if [ -f "$tmpdir/method.block" ] && ! grep -q '^#@script:' "$tmpdir/method.block"; then
+        echo "[me] Пакет в старом формате (в method.block нет #@script:)" >&2
+        echo "Пересобери пакет заново: me share <метод> / me share -all" >&2
+        return 1
+    fi
+
     if [ -f "$tmpdir/install.sh" ]; then
         if [ "$FORCE" = 1 ]; then
             bash "$tmpdir/install.sh" -f
@@ -428,7 +412,7 @@ cmd_import() {
         block=$(cat "$tmpdir/method.block")
         local mname
         mname=$(echo "$block" | grep -oP '^#@method:\s*\K\S+' | head -1)
-        [ -n "$mname" ] && import_method_block "$ME_CONF" "$mname" "$block" && {
+        [ -n "$mname" ] && block_has_script "$block" && import_method_block "$ME_CONF" "$mname" "$block" && {
             echo "[me] Метод '$mname' импортирован." >&2
             if [ -d "$tmpdir/lib" ]; then
                 local count=0
@@ -523,6 +507,11 @@ import_batch() {
     for bf in "$blocksdir"/*.block; do
         [ -f "$bf" ] || continue
         name=$(basename "$bf" .block)
+        if ! grep -q '^#@script:' "$bf"; then
+            echo "[SKIP] метод '$name' — старый формат (нет #@script:), пересобери пакет" >&2
+            skip=$((skip + 1))
+            continue
+        fi
         if grep -q "^#@method:[[:space:]]*${name}[[:space:]]*\$" "$ME_CONF" 2>/dev/null; then
             if [ "$force" = 1 ]; then
                 import_method_block "$ME_CONF" "$name" "$(cat "$bf")" || return 1
@@ -575,6 +564,12 @@ cmd_import_all() {
     }
 
     echo "[me] Batch-импорт: $(basename "$archive")" >&2
+
+    if [ -f "$tmpdir/method.block" ] && ! grep -q '^#@script:' "$tmpdir/method.block"; then
+        echo "[me] Пакет в старом формате (в method.block нет #@script:)" >&2
+        echo "Пересобери пакет заново: me share -all" >&2
+        return 1
+    fi
 
     if [ -f "$tmpdir/install.sh" ]; then
         if [ "$force" = 1 ]; then
@@ -829,21 +824,11 @@ apply_block() {
     local tmp
     tmp=$(mktemp "/tmp/me_apply_XXXXXX")
     awk -v name="$name" '
-        BEGIN { skip=0; depth=0 }
-        {
-            if ($0 ~ "^#@method:[[:space:]]*" name "[[:space:]]*$") { skip=1; next }
-            if (skip && $0 ~ "me_method_" name "\\(\\)") { depth=1; next }
-            if (skip && depth > 0) {
-                for (i=1; i<=length($0); i++) {
-                    c=substr($0,i,1)
-                    if (c=="{") depth++
-                    if (c=="}") depth--
-                }
-                if (depth <= 0) skip=0
-                next
-            }
-            if (!skip) print
+        /^#@method:[ \t]*/ {
+            if ($2 == name) { skip = 1; next }
+            skip = 0
         }
+        !skip { print }
     ' "$conf" > "$tmp"
     printf '\n' >> "$tmp"
     cat "$blockfile" >> "$tmp"
