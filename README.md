@@ -101,15 +101,17 @@ echo "Привет, терминал!"
 
 Открой ~/.config/me/me.conf и добавь объявление:   
 
-`#@method: hello
+```bash
+#@method: hello
 
 #@description: Моя первая команда
 
 #@example: me hello
 
-#@script: me_lib/hello.sh`
+#@script: me_lib/hello.sh
+```
 
-Важно: Можно прописывать как относительный путь от ~/.local/bin/me/ (me_lib/hello.sh), 
+Важно: Можно прописывать как относительный путь от `~/.local/bin/me/ (me_lib/hello.sh)`, 
 
 так и абсолютный путь к любому внешнему скрипту в системе (/usr/local/bin/my_script.sh).
 
