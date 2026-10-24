@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #true_method
 # tomv.sh — per-hash magnet cache, detached aria2c
-set -x
 CACHE_DIR="$HOME/.cache/me/tomv"
 LIST_FILE="$CACHE_DIR/.list"
+TRACKERS="udp://tracker.opentrackr.org:1337/announce,udp://open.tracker.cl:1337/announce,udp://opentracker.i2p.rocks:6969/announce,udp://tracker.openbittorrent.com:6969/announce"
 
 mkdir -p "$CACHE_DIR"
 
@@ -19,9 +19,12 @@ start_aria() {
     nohup aria2c --enable-dht --dht-listen-port=6881 \
         --seed-time=60 \
         --max-upload-limit=100K \
-        --max-connection-per-server=16 \
         --force-sequential=true \
         --allow-overwrite=true \
+        --bt-tracker="$TRACKERS" \
+        --bt-prioritize-piece=head=10M,tail=2M \
+        --bt-save-metadata=true \
+        --bt-load-saved-metadata=true \
         --console-log-level=error --summary-interval=0 \
         --dir="$dir" \
         "$magnet" > "$log" 2>&1 &
@@ -35,7 +38,7 @@ aria_running() {
 
 find_video() {
     local dir=$1
-    find "$dir" -type f -size +1M \( -iname '*.mkv' -o -iname '*.mp4' -o -iname '*.avi' -o -iname '*.mov' -o -iname '*.webm' -o -iname '*.m4v' -o -iname '*.flv' -o -iname '*.ts' -o -iname '*.m2ts' -o -iname '*.mpg' -o -iname '*.mpeg' -o -iname '*.3gp' -o -iname '*.divx' \) 2>/dev/null | head -1
+    find "$dir" -type f -size +128k \( -iname '*.mkv' -o -iname '*.mp4' -o -iname '*.avi' -o -iname '*.mov' -o -iname '*.webm' -o -iname '*.m4v' -o -iname '*.flv' -o -iname '*.ts' -o -iname '*.m2ts' -o -iname '*.mpg' -o -iname '*.mpeg' -o -iname '*.3gp' -o -iname '*.divx' \) 2>/dev/null | head -1
 }
 
 if [ "$1" = "-d" ]; then
@@ -125,7 +128,7 @@ start_aria "$magnet" "$dir"
 notify-send -i media-playback-start "tomv" "Ожидание видео..." 2>/dev/null || true
 
 while true; do
-    sleep 5
+    sleep 1
     video=$(find_video "$dir")
     if [ -n "$video" ]; then
         ftype=$(file -b "$video" 2>/dev/null)
