@@ -147,15 +147,43 @@ interactive_selector() {
     [ -z "$list" ] && { echo "[me] Нет команд в $CONF_FILE" >&2; return 1; }
 
     if command -v fzf &>/dev/null; then
-        chosen=$(echo "$list" | fzf \
-            --reverse \
+        local fzf_args fzf_rc fzf_out fzf_err
+        fzf_args=(fzf --reverse \
             --delimiter=$'\t' \
             --with-nth=1,2 \
             --preview='printf "\033[1;32m  %s\033[0m\n  \033[0;36mОписание:\033[0m %s\n  \033[0;36mПример:\033[0m %s\n" {2} {3} {4}' \
             --preview-window='right:60%:wrap' \
             --bind='f5:execute($HOME/.local/bin/me/me_lib/int_help.sh {1})' \
-            --prompt='me > ' \
-            2>/dev/null) || return 0
+            --prompt='me > ')
+        fzf_out=$(mktemp "${TMPDIR:-/tmp}/me-fzf-out.XXXXXX" 2>/dev/null) || fzf_out=""
+        fzf_err=$(mktemp "${TMPDIR:-/tmp}/me-fzf-err.XXXXXX" 2>/dev/null) || fzf_err=""
+        chosen=""
+        if [ -z "$fzf_out" ] || [ -z "$fzf_err" ]; then
+            echo "[me] fzf: не удалось создать временный файл." >&2
+            rm -f "$fzf_out" "$fzf_err"
+            return 1
+        fi
+        # FZF_DEFAULT_OPTS= — сброс глобальных опций (главная причина «UI уходит в stderr»
+        # при --height). stderr fzf (там же рисуется UI у нестандартных сборок) → на /dev/tty
+        # плюс дубль в файл для fallback-парсинга выбора. Канонический fzf рисует в /dev/tty,
+        # stderr у него пуст — на терминал ничего лишнего не попадёт.
+        if [ -t 0 ] || [ -t 1 ]; then
+            echo "$list" | FZF_DEFAULT_OPTS= "${fzf_args[@]}" \
+                >"$fzf_out" 2> >(tee "$fzf_err" >/dev/tty)
+            fzf_rc=$?
+            wait "$!" 2>/dev/null || true
+        else
+            echo "$list" | FZF_DEFAULT_OPTS= "${fzf_args[@]}" >"$fzf_out" 2>"$fzf_err"
+            fzf_rc=$?
+        fi
+        if [ "$fzf_rc" -eq 0 ] && [ -s "$fzf_out" ]; then
+            chosen=$(head -1 "$fzf_out")
+        elif [ "$fzf_rc" -eq 0 ] && [ -s "$fzf_err" ]; then
+            # Нестандартные сборки могут печатать выбор в stderr — забираем без ANSI/CR.
+            chosen=$(sed -e $'s/\e\[[0-9;?]*[a-zA-Z]//g' -e $'s/\e\][^\a]*\a//g' -e 's/\r//g' "$fzf_err" \
+                | grep -v '^[[:space:]]*$' | tail -1)
+        fi
+        rm -f "$fzf_out" "$fzf_err"
         [ -z "$chosen" ] && return 0
         chosen="${chosen%%$'\t'*}"
     else
