@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me bright — яркость экрана с верификацией через D-Bus интерфейсы
 case "$1" in
     up)

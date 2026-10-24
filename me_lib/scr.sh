@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # Скриншот через scrot
 
 CONFIG="$HOME/.local/bin/me/scr.conf"

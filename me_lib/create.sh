@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me create — интерактивное создание метода в me.conf (архитектура без eval).
 # Спрашивает имя, описание, путь к бинарнику/скрипту — генерирует лаунчер в
 # me_lib/<имя>.sh и мета-блок (#@method/#@description/#@example/#@script) в me.conf.
@@ -66,6 +67,7 @@ launcher="$ME_LIB/${name}.sh"
 tmp_launcher=$(mktemp /tmp/me_create_XXXXXX.sh)
 {
     printf '#!/usr/bin/env bash\n'
+    printf '#true_method\n'
     printf '# Метод: %s\n' "$name"
     printf '# Описание: %s\n' "$desc"
     printf '# Создан: %s\n' "$(date '+%d-%m-%Y %H:%M')"

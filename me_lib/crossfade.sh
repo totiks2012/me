@@ -1,4 +1,5 @@
 #!/bin/bash
+#true_method
 
 #@method: crossfade
 #@description: Автоматическая склейка MP3 файлов из папки с плавным наложением звука

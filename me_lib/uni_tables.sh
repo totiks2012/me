@@ -1,4 +1,5 @@
 #!/bin/bash
+#true_method
 #@method: uni_tables
 #@description: Универсальный вывод форматированных таблиц. Автоматически рассчитывает ширину колонок и сохраняет цвета color.sh.
 #@example: uni_tables "Параметр" "Значение" ; uni_tables "---" "---" ; uni_tables "Ток двигателя" "$(green '14.2 A')"

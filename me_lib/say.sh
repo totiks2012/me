@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me say — уведомление на экран: текст, заголовок, иконка, таймаут
 title=""
 body=""

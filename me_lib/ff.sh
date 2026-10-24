@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me ff — интерактивный конструктор команд ffmpeg
 
 trap 'stty sane 2>/dev/null' EXIT

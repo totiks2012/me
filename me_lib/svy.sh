@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # svy.sh – Поиск видео на YouTube: yt-dlp → fzf → mpv (720p)
 
 if [ "$1" = "-u" ]; then

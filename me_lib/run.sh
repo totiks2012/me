@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me run — поиск и запуск скрипта по имени в ~/.local/bin/
 name="$1"
 shift

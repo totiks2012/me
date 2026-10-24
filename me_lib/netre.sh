@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # netre.sh — перезапуск сети: мягкий (nmcli off/on) или жёсткий (restart NetworkManager)
 # Вызывается методом `me netre`.
 #   netre.sh        # Мягкий перезапуск: nmcli networking off → on

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me vol — уровень громкости аудиопотока [up|down|mute]
 case "$1" in
     up)   pactl set-sink-volume @DEFAULT_SINK@ +5% 2>/dev/null || amixer set Master 5%+ >/dev/null

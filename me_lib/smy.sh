@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # smy.sh – Поиск аудио на YouTube: yt-dlp → fzf → mpv --no-video
 
 if [ -z "$1" ]; then

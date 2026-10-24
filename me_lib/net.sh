@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # net.sh — диагностика причин пропажи сети (NetworkManager)
 # Вызывается методом `me net`. Никаких аргументов не принимает.
 set -u

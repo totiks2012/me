@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # title: Запись экрана в GIF/MP4
 # desk: Захват области экрана (maim/xdotool) и конвертация через ffmpeg
 # usage: me gifx

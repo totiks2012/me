@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # get.sh — fzf-выбор txt с URL в текущем каталоге, последовательное скачивание wget
 # Использование: get.sh   (env GET_FILE для неинтерактивного выбора файла)
 

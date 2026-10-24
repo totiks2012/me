@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # del.sh — Удаление/восстановление методов me (пулл)
 
 ME_LIB="$HOME/.local/bin/me/me_lib"

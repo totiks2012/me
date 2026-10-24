@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # tomv.sh — per-hash magnet cache, detached aria2c
 set -x
 CACHE_DIR="$HOME/.cache/me/tomv"

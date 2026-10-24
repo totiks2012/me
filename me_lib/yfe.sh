@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # yfe.sh – YouTube Feed Explorer: sfeed + fzf + yt-dlp + mpv
 
 CONF_FILE="$HOME/.config/me/yfe.conf"

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me upgrade — автономное тотальное обновление пакетов (pacman/apt/apk)
 echo "=== Запуск тотального обновления ==="
 if command -v pacman &>/dev/null; then

@@ -1,4 +1,5 @@
 #!/bin/bash
+#true_method
 #@method: color
 #@description: Окрашивание текста (без автоматического перевода строки)
 #@example: red "Успех: выполнено"

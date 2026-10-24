@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # me stat — срез состояния системы: температура CPU, громкость, батарея
 vol=$(pactl get-sink-volume @DEFAULT_SINK@ 2>/dev/null | awk '{print $5}' | head -n 1 || echo "N/A")
 cpu_temp=$(awk '{print $1/1000}' /sys/class/thermal/thermal_zone1/temp 2>/dev/null || echo "N/A")

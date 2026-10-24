@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+#true_method
 # itag.sh — Редактор метаданных аудиофайлов: fzf + micro + mutagen
 
 AUDIO_EXTS="*.mp3 *.flac"
