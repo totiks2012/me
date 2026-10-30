@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 #true_method
+# cit__30-10-2026_14-12-25 — Сделал -f транзакционным: запись через tmp+mv, права сохраняются, при сбое оригинал не теряется
 # 26-07-2026_16-37-50 — Изменил формат имени слепка с амереканского на европейский
 # cit__26-07-2026_19-10-50 — Добавил к версии имя версионрованого скрипта
 # cit__26-07-2026_19-23-48 — Добавил аргумент -f(finalize) добавляет полный ченджлог в основной и в слепок
@@ -34,7 +35,9 @@ preview_snaps() {
         local ts
         ts=$(basename "$s" .cit)
         local logfile="$store/$ts.log"
-        printf '  %s  %s\n' "$ts" "$(head -1 "$logfile" 2>/dev/null || true)"
+        local first_line=""
+        [ -f "$logfile" ] && first_line=$(head -1 "$logfile" 2>/dev/null)
+        printf '  %s  %s\n' "$ts" "${first_line:-(нет ченджлога)}"
     done
     local last_snap prev_snap
     last_snap=$(echo "$snaps" | head -1)
@@ -46,41 +49,31 @@ preview_snaps() {
 }
 
 list_tracked() {
-    local out=""
+    local d enc store decoded snap_count
     for d in "$CIT_DIR"/*/; do
         [ -d "$d" ] || continue
-        local enc
         enc=$(basename "$d")
         [ "$enc" = "tr_cit" ] && continue
-        local store="${d%/}"
-        local decoded
+        store="${d%/}"
         decoded=$(decode_path "$enc")
-        local snap_count
         snap_count=$(ls "$store"/*.cit 2>/dev/null | wc -l) || true
         [ "$snap_count" -eq 0 ] && continue
-        out="$out$decoded|$store
-"
+        printf '%s|%s\n' "$decoded" "$store"
     done
-    echo "$out" | sed '/^$/d'
 }
 
 list_trashed() {
-    local out=""
+    local d enc store decoded snap_count
     [ ! -d "$TRASH_DIR" ] && return
     for d in "$TRASH_DIR"/*/; do
         [ -d "$d" ] || continue
-        local enc
         enc=$(basename "$d")
-        local store="${d%/}"
-        local decoded
+        store="${d%/}"
         decoded=$(decode_path "$enc")
-        local snap_count
         snap_count=$(ls "$store"/*.cit 2>/dev/null | wc -l) || true
         [ "$snap_count" -eq 0 ] && continue
-        out="$out$decoded|$store
-"
+        printf '%s|%s\n' "$decoded" "$store"
     done
-    echo "$out" | sed '/^$/d'
 }
 
 # Тип комментария по шебангу, при отсутствии — по расширению.
@@ -245,10 +238,21 @@ if [ "${1:-}" = "-f" ]; then
         tail -n +$((skip+1)) "$src"
     }
 
-    # Обновляем оригинальный файл (in-place)
+    # Обновляем оригинальный файл (транзакционно: tmp + mv — при сбое оригинал не теряется)
     orig_content=$(build_content "$latest_snap" "$changelog_block" "$prefix")
-    printf '%s\n' "$orig_content" > "$decoded"
-    chmod +x "$decoded" 2>/dev/null || true
+    tmp=$(mktemp "${decoded}.tmp.XXXXXX") || { notify "Ошибка создания временного файла, оригинал не тронут."; exit 1; }
+    if ! printf '%s\n' "$orig_content" > "$tmp"; then
+        rm -f "$tmp"
+        notify "Ошибка записи, оригинал не тронут."
+        exit 1
+    fi
+    [ -e "$decoded" ] && chmod --reference="$decoded" "$tmp" 2>/dev/null || true
+    chmod +x "$tmp" 2>/dev/null || true
+    if ! mv "$tmp" "$decoded"; then
+        rm -f "$tmp"
+        notify "Ошибка замены, оригинал не тронут."
+        exit 1
+    fi
 
     # Формируем имя -F копии (сохраняем расширение)
     base="${fname%.*}"
