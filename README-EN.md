@@ -3,7 +3,8 @@
 
 **me** is a minimal CLI framework that turns complex terminal commands into simple, memorable methods. One configuration, one command, tab completion, and an interactive TUI selector.
 
-## me is a layer of operational methods between aliases and packages. Each method carries its own metadata `#@method:, #@description:, #@script:`, works from any script, doesn't clutter .bashrc, packs into a tar.gz, and imports onto other machines. For a single user — a replacement for aliases. For a fleet of machines — a unified pool of methods, deployable all at once
+## ``` me is a layer of operational methods between aliases and packages. Each method carries its own metadata
+(#@method:, #@description:, #@script:), works from any script, doesn't clutter .bashrc, packs into a tar.gz, and imports onto other machines. For a single user — a replacement for aliases. For a fleet of machines — a unified pool of methods, deployable all at once```
 
 Instead of dozens of messy aliases in `.bashrc`, you get a single declarative file (`~/.config/me/me.conf`) with methods that work everywhere: in your interactive shell, inside scripts, over SSH, and across different machines.
 
