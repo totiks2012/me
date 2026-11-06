@@ -4,7 +4,7 @@
 # scr — screenshot
 # ЛКМ: снимок окна
 # ПКМ: задержка 5 секунд, затем выделение области
-
+# зависимости : apt install maim slop xinput xdotool coreutils gawk
 set -u
 
 dir="$HOME/Pictures"
