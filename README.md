@@ -16,6 +16,21 @@
 me — это слой операционных методов между алиасами и пакетами. Каждый метод несёт свои метаданные (#@method:, #@description:, #@script:), работает из любого скрипта, не засоряет .bashrc, упаковывается в tar.gz и импортируется на другие машины. Для одного пользователя — замена алиасам. Для парка машин — единый пул методов, устанавливаемый разом.
 ---
 
+## Установка Зависимостей
+Самому me практически нужен только `awk` и `fzf` но для работоспособности методов надлежит установить вот эти компоненты из репозитория вашего дистрибутива  Linux :
+
+```bash
+sudo apt update && sudo apt install -y \
+  gawk \
+  fzf micro geany libnotify-bin ripgrep plocate \
+  xclip wl-clipboard xsel x11-xserver-utils x11-utils xdotool xprintidle maim slop xinput \
+  ffmpeg mpv aria2 sfeed playerctl curl pulseaudio-utils alsa-utils bc \
+  python3 python3-mutagen network-manager sudo \
+  dosfstools exfatprogs psmisc
+
+```
+
+
 ## 🚀 Release Notes / Что нового в версии 2.0
 
 Произведён кардинальный рефакторинг архитектуры `me`. Движок полностью переведён на декларативную схему **Zero-Eval / Direct Execution**.
